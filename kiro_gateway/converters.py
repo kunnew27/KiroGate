@@ -94,24 +94,23 @@ def _extract_images_from_content(content: Any) -> List[Dict[str, Any]]:
     1. Anthropic: {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
     2. OpenAI: {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
 
-    Преимущества этой реализации:
-    - Pythonic код с типизацией
-    - Robust error handling с детальным логированием
-    - Поддержка всех популярных форматов (PNG, JPEG, GIF, WEBP)
-    - Валидация base64 данных
-    - Uppercase формат для совместимости с Kiro API
+    Реализация оптимизирована для Python/FastAPI:
+    - Type hints для статической проверки типов
+    - Exception handling с контекстом через enumerate()
+    - Подробное логирование для отладки
+    - Поддержка популярных форматов (png, jpeg, gif, webp)
 
     Args:
         content: Контент сообщения (строка или список блоков)
 
     Returns:
-        Список изображений в формате Kiro: [{"format": "PNG", "source": {"bytes": "base64_data"}}]
+        Список изображений в формате Kiro: [{"format": "png", "source": {"bytes": "base64_data"}}]
 
     Example:
         >>> content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR..."}}]
         >>> images = _extract_images_from_content(content)
         >>> images[0]["format"]
-        'PNG'
+        'png'
     """
     images = []
 
@@ -136,8 +135,7 @@ def _extract_images_from_content(content: Any) -> List[Dict[str, Any]]:
                         logger.warning(f"Image block {idx} has empty base64 data, skipping")
                         continue
 
-                    # Извлекаем формат из media_type (lowercase как в JS implementation)
-                    # 'image/png' -> 'png', 'image/jpeg' -> 'jpeg'
+                    # Извлекаем формат из media_type: 'image/png' -> 'png'
                     format_name = media_type.split('/')[-1]
 
                     images.append({
@@ -163,11 +161,10 @@ def _extract_images_from_content(content: Any) -> List[Dict[str, Any]]:
                         # Парсим data URL
                         header, base64_data = url.split(",", 1)
 
-                        # Извлекаем media type из header
-                        # "data:image/png;base64" -> "image/png"
+                        # Извлекаем media type из header: "data:image/png;base64" -> "image/png"
                         media_part = header.split(":")[1].split(";")[0]
 
-                        # Извлекаем формат (lowercase как в JS implementation)
+                        # Извлекаем формат: 'image/png' -> 'png'
                         format_name = media_part.split('/')[-1]
 
                         if not base64_data:
