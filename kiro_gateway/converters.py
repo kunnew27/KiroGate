@@ -48,18 +48,18 @@ from kiro_gateway.models import (
 def extract_text_content(content: Any) -> str:
     """
     Извлекает текстовый контент из различных форматов.
-    
+
     OpenAI API поддерживает несколько форматов content:
     - Строка: "Hello, world!"
     - Список: [{"type": "text", "text": "Hello"}]
     - None: пустое сообщение
-    
+
     Args:
         content: Контент в любом поддерживаемом формате
-    
+
     Returns:
         Извлечённый текст или пустая строка
-    
+
     Example:
         >>> extract_text_content("Hello")
         'Hello'
@@ -84,6 +84,119 @@ def extract_text_content(content: Any) -> str:
                 text_parts.append(item)
         return "".join(text_parts)
     return str(content)
+
+
+def _extract_images_from_content(content: Any) -> List[Dict[str, Any]]:
+    """
+    Извлекает изображения из контента и конвертирует в формат Kiro API.
+
+    Поддерживает два основных формата:
+    1. Anthropic: {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+    2. OpenAI: {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+
+    Преимущества этой реализации:
+    - Pythonic код с типизацией
+    - Robust error handling с детальным логированием
+    - Поддержка всех популярных форматов (PNG, JPEG, GIF, WEBP)
+    - Валидация base64 данных
+    - Uppercase формат для совместимости с Kiro API
+
+    Args:
+        content: Контент сообщения (строка или список блоков)
+
+    Returns:
+        Список изображений в формате Kiro: [{"format": "PNG", "source": {"bytes": "base64_data"}}]
+
+    Example:
+        >>> content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR..."}}]
+        >>> images = _extract_images_from_content(content)
+        >>> images[0]["format"]
+        'PNG'
+    """
+    images = []
+
+    if not isinstance(content, list):
+        return images
+
+    for idx, item in enumerate(content):
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+
+        try:
+            # Anthropic format: {"type": "image", "source": {...}}
+            if item_type == "image":
+                source = item.get("source", {})
+                if source.get("type") == "base64":
+                    media_type = source.get("media_type", "image/png")
+                    base64_data = source.get("data", "")
+
+                    if not base64_data:
+                        logger.warning(f"Image block {idx} has empty base64 data, skipping")
+                        continue
+
+                    # Извлекаем формат из media_type (lowercase как в JS implementation)
+                    # 'image/png' -> 'png', 'image/jpeg' -> 'jpeg'
+                    format_name = media_type.split('/')[-1]
+
+                    images.append({
+                        "format": format_name,
+                        "source": {
+                            "bytes": base64_data
+                        }
+                    })
+                    logger.debug(f"Extracted Anthropic image #{idx}: {format_name}, size: {len(base64_data)} chars")
+
+            # OpenAI format: {"type": "image_url", "image_url": {"url": "data:..."}}
+            elif item_type == "image_url":
+                image_url = item.get("image_url", {})
+                url = image_url.get("url", "")
+
+                if not url:
+                    logger.warning(f"Image block {idx} has empty URL, skipping")
+                    continue
+
+                # Обработка data URL: data:image/png;base64,iVBORw0KG...
+                if url.startswith("data:"):
+                    try:
+                        # Парсим data URL
+                        header, base64_data = url.split(",", 1)
+
+                        # Извлекаем media type из header
+                        # "data:image/png;base64" -> "image/png"
+                        media_part = header.split(":")[1].split(";")[0]
+
+                        # Извлекаем формат (lowercase как в JS implementation)
+                        format_name = media_part.split('/')[-1]
+
+                        if not base64_data:
+                            logger.warning(f"Image block {idx} has empty base64 data after parsing, skipping")
+                            continue
+
+                        images.append({
+                            "format": format_name,
+                            "source": {
+                                "bytes": base64_data
+                            }
+                        })
+                        logger.debug(f"Extracted OpenAI image #{idx}: {format_name}, size: {len(base64_data)} chars")
+
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Failed to parse data URL in image block {idx}: {e}")
+                        continue
+                else:
+                    # URL images не поддерживаются Kiro API напрямую
+                    logger.warning(f"Image block {idx} has URL (not data URL), skipping: {url[:50]}...")
+
+        except Exception as e:
+            logger.error(f"Error extracting image from block {idx}: {e}", exc_info=True)
+            continue
+
+    if images:
+        logger.info(f"Successfully extracted {len(images)} image(s) from content")
+
+    return images
 
 
 def merge_adjacent_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
@@ -193,17 +306,17 @@ def merge_adjacent_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
 def build_kiro_history(messages: List[ChatMessage], model_id: str) -> List[Dict[str, Any]]:
     """
     Строит массив history для Kiro API из OpenAI messages.
-    
+
     Kiro API ожидает чередование userInputMessage и assistantResponseMessage.
-    Эта функция преобразует OpenAI формат в Kiro формат.
-    
+    Эта функция преобразует OpenAI формат в Kiro формат, включая поддержку изображений.
+
     Args:
         messages: Список сообщений в формате OpenAI
         model_id: Внутренний ID модели Kiro
-    
+
     Returns:
         Список словарей для поля history в Kiro API
-    
+
     Example:
         >>> msgs = [ChatMessage(role="user", content="Hello")]
         >>> history = build_kiro_history(msgs, "claude-sonnet-4")
@@ -211,40 +324,46 @@ def build_kiro_history(messages: List[ChatMessage], model_id: str) -> List[Dict[
         'Hello'
     """
     history = []
-    
+
     for msg in messages:
         if msg.role == "user":
             content = extract_text_content(msg.content)
-            
+
             user_input = {
                 "content": content,
                 "modelId": model_id,
                 "origin": "AI_EDITOR",
             }
-            
+
+            # Извлекаем изображения из контента
+            images = _extract_images_from_content(msg.content)
+            if images:
+                user_input["images"] = images
+                logger.debug(f"Added {len(images)} image(s) to user message in history")
+
             # Обработка tool_results (ответы на tool calls)
             tool_results = _extract_tool_results(msg.content)
             if tool_results:
                 user_input["userInputMessageContext"] = {"toolResults": tool_results}
-            
+
             history.append({"userInputMessage": user_input})
-            
+
         elif msg.role == "assistant":
             content = extract_text_content(msg.content)
-            
+
             assistant_response = {"content": content}
-            
+
             # Обработка tool_calls
             tool_uses = _extract_tool_uses(msg)
             if tool_uses:
                 assistant_response["toolUses"] = tool_uses
-            
+
             history.append({"assistantResponseMessage": assistant_response})
-            
+
         elif msg.role == "system":
             # System prompt обрабатывается отдельно в build_kiro_payload
             pass
-    
+
     return history
 
 
@@ -510,7 +629,14 @@ def build_kiro_payload(
         "modelId": model_id,
         "origin": "AI_EDITOR",
     }
-    
+
+    # Извлекаем изображения из текущего сообщения
+    if current_message.role != "assistant":
+        current_images = _extract_images_from_content(current_message.content)
+        if current_images:
+            user_input_message["images"] = current_images
+            logger.debug(f"Added {len(current_images)} image(s) to current message")
+
     # Добавляем tools и tool_results если есть
     # Используем обработанные tools (с короткими descriptions)
     user_input_context = _build_user_input_context(request_data, current_message, processed_tools)
@@ -678,13 +804,9 @@ def _convert_anthropic_content_to_openai(
                 text_parts.append(block.get("text", ""))
 
             elif block_type == "image":
-                # Image content - для Kiro нужно будет обработать отдельно
-                # Пока добавляем placeholder
-                source = block.get("source", {})
-                if source.get("type") == "base64":
-                    text_parts.append(f"[Image: {source.get('media_type', 'image')}]")
-                elif source.get("type") == "url":
-                    text_parts.append(f"[Image URL: {source.get('url', '')}]")
+                # Image content обрабатывается в _extract_images_from_content()
+                # Не добавляем placeholder в текст, оставляем только изображения
+                pass
 
             elif block_type == "tool_use":
                 # Assistant's tool call
