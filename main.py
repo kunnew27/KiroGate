@@ -298,11 +298,11 @@ UVICORN_LOG_CONFIG = {
 # --- 入口点 ---
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting Uvicorn server...")
+    logger.info(f"Starting Uvicorn server on port {settings.port}...")
 
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=settings.port,
         log_config=UVICORN_LOG_CONFIG,
     )

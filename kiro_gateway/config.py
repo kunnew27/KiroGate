@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # 代理 API 密钥（客户端需要在 Authorization header 中传递）
     proxy_api_key: str = Field(default="changeme_proxy_secret", alias="PROXY_API_KEY")
 
+    # 服务器端口（支持 Railway 等云平台的动态端口）
+    port: int = Field(default=8000, alias="PORT")
+
     # ==================================================================================================
     # Kiro API 凭证
     # ==================================================================================================

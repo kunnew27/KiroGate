@@ -28,11 +28,11 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# 暴露端口（Fly 必须）
+# 暴露端口（默认 8000，Railway 会通过 PORT 环境变量覆盖）
 EXPOSE 8000
 
 # ⚠️【重要】调试阶段先不加 HEALTHCHECK
 # 等服务稳定后再加回 /health
 
-# 启动 FastAPI
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动 FastAPI - 使用 shell 形式以支持环境变量替换
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
