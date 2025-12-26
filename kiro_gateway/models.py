@@ -26,7 +26,7 @@ OpenAI 兼容 API 的 Pydantic 模型。
 import time
 from typing import Any, Dict, List, Optional, Union
 from typing_extensions import Annotated
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ==================================================================================================
@@ -147,8 +147,8 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = None
     frequency_penalty: Optional[float] = None
 
-    # 工具调用
-    tools: Optional[List[Tool]] = None
+    # 工具调用 - 支持 OpenAI 和 Anthropic 格式
+    tools: Optional[List[Union[Tool, Dict[str, Any]]]] = None
     tool_choice: Optional[Union[str, Dict]] = None
 
     # 兼容性字段（忽略）
@@ -161,6 +161,50 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = None
 
     model_config = {"extra": "allow"}
+
+    @field_validator('tools', mode='before')
+    @classmethod
+    def convert_anthropic_tools(cls, v):
+        """
+        自动转换 Anthropic 格式的 tools 为 OpenAI 格式。
+
+        如果检测到 Anthropic 格式（有 input_schema 字段），
+        自动转换为 OpenAI 格式（function.parameters）。
+        """
+        if v is None:
+            return v
+
+        converted_tools = []
+        for tool in v:
+            # 如果已经是 Tool 对象，直接使用
+            if isinstance(tool, Tool):
+                converted_tools.append(tool)
+                continue
+
+            # 如果是字典
+            if isinstance(tool, dict):
+                # 检测 Anthropic 格式: 有 name, description, input_schema
+                if 'input_schema' in tool and 'name' in tool:
+                    # 转换为 OpenAI 格式
+                    converted_tool = Tool(
+                        type='function',
+                        function=ToolFunction(
+                            name=tool['name'],
+                            description=tool.get('description'),
+                            parameters=tool['input_schema']
+                        )
+                    )
+                    converted_tools.append(converted_tool)
+                # 检测 OpenAI 格式: 有 function 字段
+                elif 'function' in tool:
+                    converted_tools.append(tool)
+                else:
+                    # 未知格式，保持原样
+                    converted_tools.append(tool)
+            else:
+                converted_tools.append(tool)
+
+        return converted_tools
 
 
 # ==================================================================================================
