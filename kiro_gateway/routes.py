@@ -58,15 +58,15 @@ from kiro_gateway.cache import ModelInfoCache
 from kiro_gateway.request_handler import RequestHandler
 from kiro_gateway.utils import get_kiro_headers
 from kiro_gateway.config import settings
-from kiro_gateway.pages import (
-    render_home_page,
-    render_docs_page,
-    render_playground_page,
-    render_deploy_page,
-    render_status_page,
-    render_dashboard_page,
-    render_swagger_page,
-)
+# from kiro_gateway.pages import (
+#     render_home_page,
+#     render_docs_page,
+#     render_playground_page,
+#     render_deploy_page,
+#     render_status_page,
+#     render_dashboard_page,
+#     render_swagger_page,
+# )
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -264,15 +264,15 @@ async def verify_anthropic_api_key(
 router = APIRouter()
 
 
-@router.get("/", response_class=HTMLResponse)
-async def root():
-    """
-    Home page with dashboard.
-
-    Returns:
-        HTML home page
-    """
-    return HTMLResponse(content=render_home_page())
+# @router.get("/", response_class=HTMLResponse)
+# async def root():
+#     """
+#     Home page with dashboard.
+#
+#     Returns:
+#         HTML home page
+#     """
+#     return HTMLResponse(content=render_home_page())
 
 
 @router.get("/api", response_class=JSONResponse)
@@ -290,92 +290,92 @@ async def api_root():
     }
 
 
-@router.get("/docs", response_class=HTMLResponse)
-async def docs_page():
-    """
-    API documentation page.
-
-    Returns:
-        HTML documentation page
-    """
-    return HTMLResponse(content=render_docs_page())
-
-
-@router.get("/playground", response_class=HTMLResponse)
-async def playground_page():
-    """
-    API playground page.
-
-    Returns:
-        HTML playground page
-    """
-    return HTMLResponse(content=render_playground_page())
+# @router.get("/docs", response_class=HTMLResponse)
+# async def docs_page():
+#     """
+#     API documentation page.
+#
+#     Returns:
+#         HTML documentation page
+#     """
+#     return HTMLResponse(content=render_docs_page())
 
 
-@router.get("/deploy", response_class=HTMLResponse)
-async def deploy_page():
-    """
-    Deployment guide page.
-
-    Returns:
-        HTML deployment guide page
-    """
-    return HTMLResponse(content=render_deploy_page())
-
-
-@router.get("/status", response_class=HTMLResponse)
-async def status_page(request: Request):
-    """
-    Status page with system health info.
-
-    Returns:
-        HTML status page
-    """
-    from kiro_gateway.metrics import metrics
-
-    auth_manager: KiroAuthManager = request.app.state.auth_manager
-    model_cache: ModelInfoCache = request.app.state.model_cache
-
-    # Check if token is valid
-    token_valid = False
-    try:
-        if auth_manager._access_token and not auth_manager.is_token_expiring_soon():
-            token_valid = True
-    except Exception:
-        token_valid = False
-
-    status_data = {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": APP_VERSION,
-        "token_valid": token_valid,
-        "cache_size": model_cache.size,
-        "cache_last_update": model_cache.last_update_time
-    }
-
-    return HTMLResponse(content=render_status_page(status_data))
+# @router.get("/playground", response_class=HTMLResponse)
+# async def playground_page():
+#     """
+#     API playground page.
+#
+#     Returns:
+#         HTML playground page
+#     """
+#     return HTMLResponse(content=render_playground_page())
 
 
-@router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard_page():
-    """
-    Dashboard page with metrics and charts.
+# @router.get("/deploy", response_class=HTMLResponse)
+# async def deploy_page():
+#     """
+#     Deployment guide page.
+#
+#     Returns:
+#         HTML deployment guide page
+#     """
+#     return HTMLResponse(content=render_deploy_page())
 
-    Returns:
-        HTML dashboard page
-    """
-    return HTMLResponse(content=render_dashboard_page())
+
+# @router.get("/status", response_class=HTMLResponse)
+# async def status_page(request: Request):
+#     """
+#     Status page with system health info.
+#
+#     Returns:
+#         HTML status page
+#     """
+#     from kiro_gateway.metrics import metrics
+#
+#     auth_manager: KiroAuthManager = request.app.state.auth_manager
+#     model_cache: ModelInfoCache = request.app.state.model_cache
+#
+#     # Check if token is valid
+#     token_valid = False
+#     try:
+#         if auth_manager._access_token and not auth_manager.is_token_expiring_soon():
+#             token_valid = True
+#     except Exception:
+#         token_valid = False
+#
+#     status_data = {
+#         "status": "healthy",
+#         "timestamp": datetime.now(timezone.utc).isoformat(),
+#         "version": APP_VERSION,
+#         "token_valid": token_valid,
+#         "cache_size": model_cache.size,
+#         "cache_last_update": model_cache.last_update_time
+#     }
+#
+#     return HTMLResponse(content=render_status_page(status_data))
 
 
-@router.get("/swagger", response_class=HTMLResponse)
-async def swagger_page():
-    """
-    Swagger UI page for API documentation.
+# @router.get("/dashboard", response_class=HTMLResponse)
+# async def dashboard_page():
+#     """
+#     Dashboard page with metrics and charts.
+#
+#     Returns:
+#         HTML dashboard page
+#     """
+#     return HTMLResponse(content=render_dashboard_page())
 
-    Returns:
-        HTML Swagger UI page
-    """
-    return HTMLResponse(content=render_swagger_page())
+
+# @router.get("/swagger", response_class=HTMLResponse)
+# async def swagger_page():
+#     """
+#     Swagger UI page for API documentation.
+#
+#     Returns:
+#         HTML Swagger UI page
+#     """
+#     return HTMLResponse(content=render_swagger_page())
 
 
 @router.get("/health")
