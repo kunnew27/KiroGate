@@ -4174,6 +4174,35 @@ def render_user_page(user) -> str:
 
       <textarea id="donateToken" class="w-full h-28 p-3 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴你的 Refresh Token..."></textarea>
 
+      <div class="mt-4 p-3 rounded-lg" style="background: var(--bg-input); border: 1px dashed var(--border);">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium">📥 批量导入</span>
+          <button onclick="importTokens()" class="btn-primary text-sm">导入</button>
+        </div>
+        <div class="flex gap-1 mb-3 p-1 rounded-lg" style="background: var(--bg-input);">
+          <button onclick="setImportMode('file')" id="importMode-file" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all active">文件</button>
+          <button onclick="setImportMode('tokens')" id="importMode-tokens" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">复制</button>
+          <button onclick="setImportMode('json')" id="importMode-json" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">粘贴 JSON</button>
+        </div>
+        <input type="hidden" id="importMode" value="file">
+
+        <div id="importPanel-file">
+          <input id="donateImportFile" type="file" accept=".json" class="w-full text-sm">
+          <input id="donateImportPath" type="text" class="w-full mt-2 p-2 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="/Users/.../kiro-accounts-xxxx.json">
+          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 Kiro Account Manager 导出文件，仅读取 refreshToken 字段并逐个验证。路径导入仅支持项目目录内文件。</p>
+        </div>
+
+        <div id="importPanel-tokens" style="display: none;">
+          <textarea id="donateImportTokens" class="w-full h-24 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴 refreshToken，每行一个或用逗号/空格分隔"></textarea>
+          <p class="text-xs mt-2" style="color: var(--text-muted);">示例：<code class="bg-black/20 px-1 rounded">aor... \\n aor...</code></p>
+        </div>
+
+        <div id="importPanel-json" style="display: none;">
+          <textarea id="donateImportJson" class="w-full h-28 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder='{"accounts":[{"credentials":{"refreshToken":"aor..."}}]}'></textarea>
+          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 JSON 字符串/数组/对象，仅识别 refreshToken 字段：<code class="bg-black/20 px-1 rounded">["aor...","aor..."]</code></p>
+        </div>
+      </div>
+
       <!-- 匿名选项（仅公开模式显示） -->
       <div id="anonymousOption" class="mt-3 p-3 rounded-lg public-only" style="background: var(--bg-input); display: none;">
         <label class="flex items-center gap-3 cursor-pointer">
@@ -4980,8 +5009,17 @@ def render_user_page(user) -> str:
     function hideDonateModal() {{
       document.getElementById('donateModal').style.display = 'none';
       setDonateMode('private');
+      setImportMode('file');
       document.getElementById('donateToken').value = '';
       document.getElementById('donateAnonymous').checked = false;
+      const importFile = document.getElementById('donateImportFile');
+      if (importFile) importFile.value = '';
+      const importPath = document.getElementById('donateImportPath');
+      if (importPath) importPath.value = '';
+      const importTokens = document.getElementById('donateImportTokens');
+      if (importTokens) importTokens.value = '';
+      const importJson = document.getElementById('donateImportJson');
+      if (importJson) importJson.value = '';
     }}
 
     function setDonateMode(mode) {{
@@ -5006,6 +5044,18 @@ def render_user_page(user) -> str:
         anonOption.style.display = 'block';
       }}
       document.getElementById('donateVisibility').value = mode;
+    }}
+
+    function setImportMode(mode) {{
+      const modes = ['file', 'tokens', 'json'];
+      modes.forEach(m => {{
+        const btn = document.getElementById('importMode-' + m);
+        const panel = document.getElementById('importPanel-' + m);
+        if (btn) btn.classList.toggle('active', m === mode);
+        if (panel) panel.style.display = m === mode ? 'block' : 'none';
+      }});
+      const modeInput = document.getElementById('importMode');
+      if (modeInput) modeInput.value = mode;
     }}
 
     function showKeyModal(key, usePublicPool) {{
@@ -5082,6 +5132,63 @@ def render_user_page(user) -> str:
           loadProfile();
         }} else {{
           showConfirmModal({{ title: '失败', message: d.error || d.message || '添加失败', icon: '❌', confirmText: '好的', danger: false }});
+        }}
+      }} catch (e) {{
+        showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});
+      }}
+    }}
+
+    async function importTokens() {{
+      const mode = document.getElementById('importMode')?.value || 'file';
+      const fileInput = document.getElementById('donateImportFile');
+      const file = fileInput?.files?.[0] || null;
+      const pathInput = document.getElementById('donateImportPath');
+      const filePath = pathInput?.value?.trim() || '';
+      const tokensInput = document.getElementById('donateImportTokens');
+      const tokensText = tokensInput?.value?.trim() || '';
+      const jsonInput = document.getElementById('donateImportJson');
+      const jsonText = jsonInput?.value?.trim() || '';
+      if (mode === 'file' && !file && !filePath) {{
+        return showConfirmModal({{ title: '提示', message: '请上传 JSON 文件或填写文件路径', icon: '💡', confirmText: '好的', danger: false }});
+      }}
+      if (mode === 'tokens' && !tokensText) {{
+        return showConfirmModal({{ title: '提示', message: '请粘贴 refreshToken 列表', icon: '💡', confirmText: '好的', danger: false }});
+      }}
+      if (mode === 'json' && !jsonText) {{
+        return showConfirmModal({{ title: '提示', message: '请粘贴 JSON 内容', icon: '💡', confirmText: '好的', danger: false }});
+      }}
+
+      const visibility = document.getElementById('donateVisibility').value;
+      if (SELF_USE_MODE && visibility === 'public') {{
+        return showConfirmModal({{ title: '提示', message: '自用模式下禁止公开 Token，请选择个人使用。', icon: '🔒', confirmText: '好的', danger: false }});
+      }}
+      const anonymous = document.getElementById('donateAnonymous').checked;
+
+      const fd = new FormData();
+      if (mode === 'file') {{
+        if (file) {{
+          fd.append('file', file);
+        }} else {{
+          fd.append('file_path', filePath);
+        }}
+      }} else if (mode === 'tokens') {{
+        fd.append('tokens_text', tokensText);
+      }} else {{
+        fd.append('json_text', jsonText);
+      }}
+      fd.append('visibility', visibility);
+      if (visibility === 'public' && anonymous) fd.append('anonymous', 'true');
+
+      try {{
+        const r = await fetch('/user/api/tokens/import', {{ method: 'POST', body: fd }});
+        const d = await r.json();
+        if (r.ok && d.success) {{
+          await showConfirmModal({{ title: '导入完成', message: d.message || '导入成功', icon: '🎉', confirmText: '好的', danger: false }});
+          hideDonateModal();
+          loadTokens();
+          loadProfile();
+        }} else {{
+          showConfirmModal({{ title: '导入失败', message: d.error || d.message || '导入失败', icon: '❌', confirmText: '好的', danger: false }});
         }}
       }} catch (e) {{
         showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});

@@ -27,14 +27,17 @@ Contains all API endpoints:
 - /v1/messages: Anthropic compatible messages API
 """
 
+import asyncio
 import hashlib
 import json
+import re
 import secrets
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security, Header, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security, Header, Form, Query, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyHeader
 from slowapi import Limiter
@@ -141,6 +144,20 @@ def _mask_token(token: str) -> str:
     if len(token) <= 8:
         return "***"
     return f"{token[:4]}...{token[-4:]}"
+
+
+def _get_import_key_from_request(request: Request) -> str | None:
+    """Extract import key from Authorization or x-import-key header."""
+    auth_header = request.headers.get("authorization", "")
+    if auth_header:
+        if auth_header.lower().startswith("bearer "):
+            candidate = auth_header[7:].strip()
+        else:
+            candidate = auth_header.strip()
+        if candidate:
+            return candidate
+    key = request.headers.get("x-import-key", "").strip()
+    return key or None
 
 
 def _get_proxy_api_key(request: Request | None = None) -> str:
@@ -1132,6 +1149,51 @@ async def admin_remove_token(
     return {"success": False, "message": "Token 不存在"}
 
 
+@router.post("/admin/api/import-keys", include_in_schema=False)
+async def admin_create_import_key(
+    request: Request,
+    user_id: int = Form(...),
+    name: str = Form(""),
+    _csrf: None = Depends(require_same_origin)
+):
+    """Create an admin-generated import key for a user."""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+    user = user_db.get_user(user_id)
+    if not user:
+        return JSONResponse(status_code=404, content={"error": "用户不存在"})
+    if user.is_banned:
+        return JSONResponse(status_code=403, content={"error": "用户已被封禁"})
+
+    plain_key, import_key = user_db.generate_import_key(user_id, name or None)
+    return {
+        "success": True,
+        "key": plain_key,
+        "key_prefix": import_key.key_prefix,
+        "id": import_key.id,
+        "user_id": user_id
+    }
+
+
+@router.post("/admin/api/import-keys/delete", include_in_schema=False)
+async def admin_delete_import_key(
+    request: Request,
+    key_id: int = Form(...),
+    _csrf: None = Depends(require_same_origin)
+):
+    """Delete an admin-generated import key."""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+    success = user_db.delete_import_key(key_id)
+    return {"success": success}
+
+
 @router.post("/admin/api/clear-tokens", include_in_schema=False)
 async def admin_clear_tokens(
     request: Request,
@@ -1727,6 +1789,272 @@ async def user_get_public_tokens(request: Request):
     }
 
 
+IMPORT_FILE_MAX_BYTES = 5 * 1024 * 1024
+IMPORT_TEXT_MAX_BYTES = 200 * 1024
+IMPORT_TOKEN_MAX_COUNT = 500
+IMPORT_VALIDATE_CONCURRENCY = 3
+IMPORT_ERROR_SAMPLE_LIMIT = 5
+
+
+def _split_tokens_text(text: str) -> list[str]:
+    parts = re.split(r"[,\s;]+", text.strip())
+    return [part for part in parts if part]
+
+
+def _extract_refresh_tokens(payload: object) -> tuple[list[str], int, list[str]]:
+    tokens: list[str] = []
+    missing_required = 0
+    missing_samples: list[str] = []
+
+    def record_missing(path: str, reason: str) -> None:
+        nonlocal missing_required
+        missing_required += 1
+        if len(missing_samples) < IMPORT_ERROR_SAMPLE_LIMIT:
+            missing_samples.append(f"{path}: {reason}")
+
+    def add_token(value: object, path: str) -> None:
+        if isinstance(value, str):
+            token = value.strip()
+            if token:
+                tokens.append(token)
+                return
+        record_missing(path, "refreshToken 为空或无效")
+
+    def handle_list(items: list, path: str, enforce_required: bool) -> None:
+        for index, item in enumerate(items):
+            item_path = f"{path}[{index}]"
+            if isinstance(item, dict):
+                if "refreshToken" in item:
+                    add_token(item.get("refreshToken"), f"{item_path}.refreshToken")
+                elif (
+                    isinstance(item.get("credentials"), dict)
+                    and "refreshToken" in item["credentials"]
+                ):
+                    add_token(item["credentials"].get("refreshToken"), f"{item_path}.credentials.refreshToken")
+                else:
+                    if enforce_required:
+                        record_missing(item_path, "缺少 refreshToken")
+                    handle_dict(item, item_path)
+            elif isinstance(item, str):
+                add_token(item, item_path)
+            elif isinstance(item, list):
+                handle_list(item, item_path, enforce_required)
+            else:
+                if enforce_required:
+                    record_missing(item_path, "类型不支持")
+
+    def handle_dict(obj: dict, path: str) -> None:
+        if "refreshToken" in obj:
+            add_token(obj.get("refreshToken"), f"{path}.refreshToken" if path else "refreshToken")
+        if isinstance(obj.get("credentials"), dict) and "refreshToken" in obj["credentials"]:
+            add_token(
+                obj["credentials"].get("refreshToken"),
+                f"{path}.credentials.refreshToken" if path else "credentials.refreshToken"
+            )
+
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                handle_dict(value, f"{path}.{key}" if path else key)
+            elif isinstance(value, list):
+                enforce = key in {"accounts", "tokens", "data"}
+                handle_list(value, f"{path}.{key}" if path else key, enforce)
+
+    if isinstance(payload, list):
+        handle_list(payload, "root", True)
+    elif isinstance(payload, dict):
+        handle_dict(payload, "")
+    elif isinstance(payload, str):
+        add_token(payload, "refreshToken")
+
+    return tokens, missing_required, missing_samples
+
+
+def _dedupe_tokens(tokens: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+async def _read_import_payload(
+    file: UploadFile | None,
+    file_path: str | None,
+    tokens_text: str | None,
+    json_text: str | None,
+    allow_file_path: bool = True
+) -> tuple[object | None, str | None, int | None]:
+    input_count = 0
+    if file and file.filename:
+        input_count += 1
+    if file_path and file_path.strip():
+        input_count += 1
+    if tokens_text and tokens_text.strip():
+        input_count += 1
+    if json_text and json_text.strip():
+        input_count += 1
+
+    if input_count == 0:
+        return None, "请提供文件、路径、文本或 JSON 之一", 400
+    if input_count > 1:
+        return None, "请仅选择一种导入方式", 400
+
+    if file and file.filename:
+        content = await file.read()
+        if not content:
+            return None, "文件内容为空", 400
+        if len(content) > IMPORT_FILE_MAX_BYTES:
+            return None, "文件过大，请拆分后导入", 400
+        try:
+            return json.loads(content), None, None
+        except json.JSONDecodeError:
+            return None, "JSON 格式无效", 400
+
+    if file_path and file_path.strip():
+        if not allow_file_path:
+            return None, "不支持 file_path 导入，请使用上传或文本方式", 400
+        path = Path(file_path).expanduser().resolve()
+        project_root = Path(__file__).resolve().parents[1]
+        if project_root not in path.parents and path != project_root:
+            return None, "仅支持导入项目目录下的文件，请使用上传方式", 400
+        if not path.exists() or not path.is_file():
+            return None, "文件不存在", 400
+        if path.stat().st_size > IMPORT_FILE_MAX_BYTES:
+            return None, "文件过大，请拆分后导入", 400
+        try:
+            return json.loads(path.read_text(encoding="utf-8")), None, None
+        except json.JSONDecodeError:
+            return None, "JSON 格式无效", 400
+
+    if json_text and json_text.strip():
+        json_text = json_text.strip()
+        if len(json_text.encode("utf-8")) > IMPORT_FILE_MAX_BYTES:
+            return None, "JSON 内容过大，请拆分后导入", 400
+        try:
+            return json.loads(json_text), None, None
+        except json.JSONDecodeError:
+            return None, "JSON 格式无效", 400
+
+    if tokens_text is not None:
+        tokens_text = tokens_text.strip()
+        if not tokens_text:
+            return None, "导入文本为空", 400
+        if len(tokens_text.encode("utf-8")) > IMPORT_TEXT_MAX_BYTES:
+            return None, "导入文本过大，请拆分后导入", 400
+        if tokens_text[0] in "[{\"":
+            try:
+                return json.loads(tokens_text), None, None
+            except json.JSONDecodeError:
+                return None, "JSON 格式无效", 400
+        return _split_tokens_text(tokens_text), None, None
+
+    return None, "导入内容无效", 400
+
+
+async def _process_import_payload(
+    user_id: int,
+    visibility: str,
+    anonymous: bool,
+    payload: object
+) -> tuple[dict, int]:
+    tokens, missing_required, missing_samples = _extract_refresh_tokens(payload)
+    tokens = _dedupe_tokens(tokens)
+    if not tokens:
+        message = "未找到可导入的 Refresh Token"
+        if missing_required:
+            message = f"{message}，缺少必填 {missing_required}。"
+        if missing_samples:
+            message = f"{message} 必填示例：{'；'.join(missing_samples)}"
+        return {
+            "error": message,
+            "missing_required": missing_required,
+        }, 400
+    if len(tokens) > IMPORT_TOKEN_MAX_COUNT:
+        return {"error": f"导入数量过多（{len(tokens)}），请拆分后导入"}, 400
+
+    from kiro_gateway.database import user_db
+
+    pending_tokens: list[str] = []
+    skipped = 0
+    for token in tokens:
+        if user_db.token_exists(token):
+            skipped += 1
+        else:
+            pending_tokens.append(token)
+
+    semaphore = asyncio.Semaphore(IMPORT_VALIDATE_CONCURRENCY)
+
+    async def validate_token(token: str) -> tuple[str, bool, str | None]:
+        async with semaphore:
+            try:
+                temp_manager = KiroAuthManager(
+                    refresh_token=token,
+                    region=settings.region,
+                    profile_arn=settings.profile_arn
+                )
+                access_token = await temp_manager.get_access_token()
+                if not access_token:
+                    return token, False, "无法获取访问令牌"
+                return token, True, None
+            except Exception as exc:
+                return token, False, str(exc)
+
+    validation_results = await asyncio.gather(
+        *(validate_token(token) for token in pending_tokens)
+    )
+
+    imported = 0
+    invalid = 0
+    failed = 0
+    error_samples: list[str] = []
+
+    for token, ok, error in validation_results:
+        if not ok:
+            invalid += 1
+            if error and len(error_samples) < IMPORT_ERROR_SAMPLE_LIMIT:
+                error_samples.append(f"{_mask_token(token)}: {error}")
+            continue
+
+        success, message = user_db.donate_token(user_id, token, visibility, anonymous)
+        if success:
+            imported += 1
+        else:
+            if message == "Token 已存在":
+                skipped += 1
+            else:
+                failed += 1
+                if len(error_samples) < IMPORT_ERROR_SAMPLE_LIMIT:
+                    error_samples.append(f"{_mask_token(token)}: {message}")
+
+    total = len(tokens)
+    message = (
+        f"导入完成：成功 {imported}，已存在 {skipped}，无效 {invalid}，失败 {failed}。"
+    )
+    if missing_required:
+        message = f"{message} 缺少必填 {missing_required}。"
+    sample_messages: list[str] = []
+    if missing_samples:
+        sample_messages.append(f"必填示例：{'；'.join(missing_samples)}")
+    if error_samples:
+        sample_messages.append(f"错误示例：{'；'.join(error_samples)}")
+    if sample_messages:
+        message = f"{message} {' '.join(sample_messages)}"
+
+    return {
+        "success": imported + skipped > 0,
+        "message": message,
+        "total": total,
+        "imported": imported,
+        "skipped": skipped,
+        "invalid": invalid,
+        "failed": failed,
+        "missing_required": missing_required,
+    }, 200
+
+
 @router.post("/user/api/tokens", include_in_schema=False)
 async def user_donate_token(
     request: Request,
@@ -1767,6 +2095,108 @@ async def user_donate_token(
     # Save token
     success, message = user_db.donate_token(user.id, refresh_token, visibility, anonymous)
     return {"success": success, "message": message}
+
+
+@router.post("/user/api/tokens/import", include_in_schema=False)
+async def user_import_tokens(
+    request: Request,
+    file: UploadFile | None = File(None),
+    file_path: str | None = Form(None),
+    tokens_text: str | None = Form(None),
+    json_text: str | None = Form(None),
+    visibility: str = Form("private"),
+    anonymous: bool = Form(False),
+    _csrf: None = Depends(require_same_origin)
+):
+    """Import refresh tokens from a JSON file."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.metrics import metrics
+    if metrics.is_self_use_enabled() and visibility == "public":
+        return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
+
+    if visibility not in ("public", "private"):
+        return JSONResponse(status_code=400, content={"error": "可见性无效"})
+
+    payload, error, status = await _read_import_payload(
+        file=file,
+        file_path=file_path,
+        tokens_text=tokens_text,
+        json_text=json_text
+    )
+    if error:
+        return JSONResponse(status_code=status or 400, content={"error": error})
+
+    result, status = await _process_import_payload(
+        user_id=user.id,
+        visibility=visibility,
+        anonymous=anonymous,
+        payload=payload
+    )
+    if status != 200:
+        return JSONResponse(status_code=status, content=result)
+    return result
+
+
+@router.post("/api/tokens/import")
+async def api_import_tokens(
+    request: Request,
+    file: UploadFile | None = File(None),
+    file_path: str | None = Form(None),
+    tokens_text: str | None = Form(None),
+    json_text: str | None = Form(None),
+    visibility: str = Form("private"),
+    anonymous: bool = Form(False)
+):
+    """Import refresh tokens using an admin-generated import key."""
+    import_key = _get_import_key_from_request(request)
+    if not import_key:
+        return JSONResponse(status_code=401, content={"error": "Import Key 缺失"})
+
+    from kiro_gateway.database import user_db
+    result = user_db.verify_import_key(import_key)
+    if not result:
+        return JSONResponse(status_code=401, content={"error": "Import Key 无效"})
+
+    user_id, import_key_obj = result
+    try:
+        user = user_db.get_user(user_id)
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "用户不存在"})
+        if user.is_banned:
+            return JSONResponse(status_code=403, content={"error": "用户已被封禁"})
+
+        from kiro_gateway.metrics import metrics
+        if metrics.is_self_use_enabled() and visibility == "public":
+            return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
+
+        if visibility not in ("public", "private"):
+            return JSONResponse(status_code=400, content={"error": "可见性无效"})
+
+    payload, error, status = await _read_import_payload(
+        file=file,
+        file_path=file_path,
+        tokens_text=tokens_text,
+        json_text=json_text,
+        allow_file_path=False
+    )
+        if error:
+            return JSONResponse(status_code=status or 400, content={"error": error})
+
+        result, status = await _process_import_payload(
+            user_id=user_id,
+            visibility=visibility,
+            anonymous=anonymous,
+            payload=payload
+        )
+        if status != 200:
+            return JSONResponse(status_code=status, content=result)
+        user_db.record_import_key_usage(import_key_obj.id)
+        return result
+    finally:
+        pass
 
 
 @router.put("/user/api/tokens/{token_id}", include_in_schema=False)
