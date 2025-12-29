@@ -29,3 +29,6 @@ requests/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Data files
+data/

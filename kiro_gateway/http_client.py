@@ -201,6 +201,7 @@ class KiroHttpClient:
                 # 403 - Token expired, refresh and retry
                 if response.status_code == 403:
                     logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{max_retries})")
+                    await response.aclose()
                     await self.auth_manager.force_refresh()
                     continue
 
@@ -208,6 +209,7 @@ class KiroHttpClient:
                 if response.status_code == 429:
                     delay = settings.base_retry_delay * (2 ** attempt)
                     logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await response.aclose()
                     await asyncio.sleep(delay)
                     continue
 
@@ -215,6 +217,7 @@ class KiroHttpClient:
                 if 500 <= response.status_code < 600:
                     delay = settings.base_retry_delay * (2 ** attempt)
                     logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await response.aclose()
                     await asyncio.sleep(delay)
                     continue
 
@@ -240,12 +243,12 @@ class KiroHttpClient:
         if stream:
             raise HTTPException(
                 status_code=504,
-                detail=f"Model did not respond within {timeout}s after {max_retries} attempts. Please try again."
+                detail=f"模型在 {max_retries} 次尝试后仍未在 {timeout}s 内响应，请稍后再试。"
             )
         else:
             raise HTTPException(
                 status_code=502,
-                detail=f"Failed to complete request after {max_retries} attempts: {last_error}"
+                detail=f"在 {max_retries} 次尝试后仍未完成请求: {last_error}"
             )
 
     def _get_headers(self, token: str) -> dict:

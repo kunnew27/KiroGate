@@ -28,7 +28,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,8 +62,13 @@ def _get_raw_env_value(var_name: str, env_file: str = ".env") -> Optional[str]:
             match = re.match(pattern, line)
             if match:
                 return match.group(2)
-    except Exception:
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        # File not found or permission issues are expected when env file doesn't exist
         pass
+    except (re.error, ValueError) as e:
+        # Regex or parsing errors - log but don't fail
+        from loguru import logger
+        logger.debug(f"Error parsing env file for {var_name}: {e}")
 
     return None
 
@@ -211,6 +216,83 @@ class Settings(BaseSettings):
     # 分片重叠字符数
     chunk_overlap_chars: int = Field(default=2000, alias="CHUNK_OVERLAP_CHARS")
 
+    # ==================================================================================================
+    # Admin 管理页面配置
+    # ==================================================================================================
+
+    # Admin 登录密码
+    admin_password: str = Field(default="admin123", alias="ADMIN_PASSWORD")
+
+    # Admin Session 签名密钥（请在生产环境中更改）
+    admin_secret_key: str = Field(default="kirogate_admin_secret_key_change_me", alias="ADMIN_SECRET_KEY")
+
+    # Admin Session 有效期（秒）
+    admin_session_max_age: int = Field(default=86400, alias="ADMIN_SESSION_MAX_AGE")
+
+    # Admin Session SameSite 策略: lax/strict/none
+    admin_cookie_samesite: str = Field(default="strict", alias="ADMIN_COOKIE_SAMESITE")
+
+    # ==================================================================================================
+    # Cookie & CSRF 配置
+    # ==================================================================================================
+
+    # 是否强制 secure cookie（None 表示自动按请求协议判断）
+    cookie_secure: Optional[bool] = Field(default=None, alias="COOKIE_SECURE")
+
+    # OAuth 临时 state cookie 的 SameSite 策略
+    oauth_state_cookie_samesite: str = Field(default="lax", alias="OAUTH_STATE_COOKIE_SAMESITE")
+
+    # 是否启用 CSRF 保护（仅管理/用户端接口）
+    csrf_enabled: bool = Field(default=True, alias="CSRF_ENABLED")
+
+    # ==================================================================================================
+    # OAuth2 LinuxDo 配置
+    # ==================================================================================================
+
+    # OAuth2 Client ID
+    oauth_client_id: str = Field(default="", alias="OAUTH_CLIENT_ID")
+
+    # OAuth2 Client Secret
+    oauth_client_secret: str = Field(default="", alias="OAUTH_CLIENT_SECRET")
+
+    # OAuth2 Redirect URI
+    oauth_redirect_uri: str = Field(default="http://localhost:8000/oauth2/callback", alias="OAUTH_REDIRECT_URI")
+
+    # ==================================================================================================
+    # OAuth2 GitHub 配置
+    # ==================================================================================================
+
+    # GitHub OAuth2 Client ID
+    github_client_id: str = Field(default="", alias="GITHUB_CLIENT_ID")
+
+    # GitHub OAuth2 Client Secret
+    github_client_secret: str = Field(default="", alias="GITHUB_CLIENT_SECRET")
+
+    # GitHub OAuth2 Redirect URI
+    github_redirect_uri: str = Field(default="http://localhost:8000/oauth2/github/callback", alias="GITHUB_REDIRECT_URI")
+
+    # ==================================================================================================
+    # 用户系统配置
+    # ==================================================================================================
+
+    # 用户 Session 签名密钥
+    user_session_secret: str = Field(default="kirogate_user_secret_change_me", alias="USER_SESSION_SECRET")
+
+    # 用户 Session 有效期（秒），默认7天
+    user_session_max_age: int = Field(default=604800, alias="USER_SESSION_MAX_AGE")
+
+    # 用户 Session SameSite 策略: lax/strict/none
+    user_cookie_samesite: str = Field(default="lax", alias="USER_COOKIE_SAMESITE")
+
+    # Token 加密密钥（32字节）
+    token_encrypt_key: str = Field(default="kirogate_token_encrypt_key_32b!", alias="TOKEN_ENCRYPT_KEY")
+
+    # Token 健康检查间隔（秒）
+    token_health_check_interval: int = Field(default=3600, alias="TOKEN_HEALTH_CHECK_INTERVAL")
+
+    # Token 最低成功率阈值
+    token_min_success_rate: float = Field(default=0.7, alias="TOKEN_MIN_SUCCESS_RATE")
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -230,6 +312,49 @@ class Settings(BaseSettings):
         if v not in valid_modes:
             return "off"
         return v
+
+    @field_validator("admin_cookie_samesite", "user_cookie_samesite", "oauth_state_cookie_samesite")
+    @classmethod
+    def validate_cookie_samesite(cls, v: str) -> str:
+        """验证 SameSite 值。"""
+        valid = {"lax", "strict", "none"}
+        v = v.lower()
+        if v not in valid:
+            return "lax"
+        return v
+
+    @model_validator(mode="after")
+    def validate_security_defaults(self) -> "Settings":
+        """验证安全配置，警告使用默认密钥。"""
+        from loguru import logger
+
+        insecure_defaults = []
+
+        # 检查默认密码
+        if self.admin_password == "admin123":
+            insecure_defaults.append("ADMIN_PASSWORD 使用默认值 'admin123'")
+
+        # 检查默认密钥
+        default_keys = {
+            "admin_secret_key": "kirogate_admin_secret_key_change_me",
+            "user_session_secret": "kirogate_user_secret_change_me",
+            "token_encrypt_key": "kirogate_token_encrypt_key_32b!",
+        }
+
+        for key_name, default_value in default_keys.items():
+            value = getattr(self, key_name)
+            if value == default_value:
+                insecure_defaults.append(f"{key_name.upper()} 使用默认值（不安全）")
+
+        if insecure_defaults:
+            logger.warning("=" * 60)
+            logger.warning("安全警告: 检测到不安全的默认配置！")
+            for issue in insecure_defaults:
+                logger.warning(f"  - {issue}")
+            logger.warning("请在生产环境中修改 .env 文件中的相关配置")
+            logger.warning("=" * 60)
+
+        return self
 
 
 # Global settings instance
@@ -269,6 +394,34 @@ AUTO_CHUNKING_ENABLED: bool = settings.auto_chunking_enabled
 AUTO_CHUNK_THRESHOLD: int = settings.auto_chunk_threshold
 CHUNK_MAX_CHARS: int = settings.chunk_max_chars
 CHUNK_OVERLAP_CHARS: int = settings.chunk_overlap_chars
+ADMIN_PASSWORD: str = settings.admin_password
+ADMIN_SECRET_KEY: str = settings.admin_secret_key
+ADMIN_SESSION_MAX_AGE: int = settings.admin_session_max_age
+
+# OAuth2 & User System
+OAUTH_CLIENT_ID: str = settings.oauth_client_id
+OAUTH_CLIENT_SECRET: str = settings.oauth_client_secret
+OAUTH_REDIRECT_URI: str = settings.oauth_redirect_uri
+USER_SESSION_SECRET: str = settings.user_session_secret
+USER_SESSION_MAX_AGE: int = settings.user_session_max_age
+TOKEN_ENCRYPT_KEY: str = settings.token_encrypt_key
+TOKEN_HEALTH_CHECK_INTERVAL: int = settings.token_health_check_interval
+TOKEN_MIN_SUCCESS_RATE: float = settings.token_min_success_rate
+
+# OAuth2 LinuxDo endpoints
+OAUTH_AUTHORIZATION_URL: str = "https://connect.linux.do/oauth2/authorize"
+OAUTH_TOKEN_URL: str = "https://connect.linux.do/oauth2/token"
+OAUTH_USER_URL: str = "https://connect.linux.do/api/user"
+
+# OAuth2 GitHub configuration
+GITHUB_CLIENT_ID: str = settings.github_client_id
+GITHUB_CLIENT_SECRET: str = settings.github_client_secret
+GITHUB_REDIRECT_URI: str = settings.github_redirect_uri
+
+# OAuth2 GitHub endpoints
+GITHUB_AUTHORIZATION_URL: str = "https://github.com/login/oauth/authorize"
+GITHUB_TOKEN_URL: str = "https://github.com/login/oauth/access_token"
+GITHUB_USER_URL: str = "https://api.github.com/user"
 
 # ==================================================================================================
 # Slow Model Configuration
@@ -365,8 +518,20 @@ def get_internal_model_id(external_model: str) -> str:
 
     Returns:
         Kiro API internal model ID
+
+    Raises:
+        ValueError: If model is not supported
     """
-    return MODEL_MAPPING.get(external_model, external_model)
+    if external_model in MODEL_MAPPING:
+        return MODEL_MAPPING[external_model]
+
+    # 检查是否是有效的内部模型 ID（直接传递）
+    valid_internal_ids = set(MODEL_MAPPING.values())
+    if external_model in valid_internal_ids:
+        return external_model
+
+    available = ", ".join(sorted(AVAILABLE_MODELS))
+    raise ValueError(f"不支持的模型: {external_model}。可用模型: {available}")
 
 
 def get_adaptive_timeout(model: str, base_timeout: float) -> float:
