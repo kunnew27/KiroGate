@@ -919,10 +919,15 @@ def render_home_page() -> str:
   {COMMON_FOOTER}
 
   <script>
-    // ECharts 模型展示图
-    const modelsChart = echarts.init(document.getElementById('modelsChart'));
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    modelsChart.setOption({{
+    // 等待 echarts 加载完成
+    function initModelsChart() {
+      if (typeof echarts === 'undefined') {
+        setTimeout(initModelsChart, 100);
+        return;
+      }
+      const modelsChart = echarts.init(document.getElementById('modelsChart'));
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      modelsChart.setOption({{
       tooltip: {{
         trigger: 'axis',
         backgroundColor: isDark ? 'rgba(17, 24, 39, 0.95)' : 'rgba(255, 255, 255, 0.95)',
@@ -966,6 +971,14 @@ def render_home_page() -> str:
       }}]
     }});
     window.addEventListener('resize', () => modelsChart.resize());
+    }
+
+    // 页面加载完成后初始化图表
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initModelsChart);
+    } else {
+      initModelsChart();
+    }
   </script>
 </body>
 </html>'''
