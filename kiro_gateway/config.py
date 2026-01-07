@@ -293,6 +293,10 @@ class Settings(BaseSettings):
     # Token 最低成功率阈值
     token_min_success_rate: float = Field(default=0.7, alias="TOKEN_MIN_SUCCESS_RATE")
 
+    # 静态资源代理配置
+    static_assets_proxy_enabled: bool = Field(default=True, alias="STATIC_ASSETS_PROXY_ENABLED")
+    static_assets_proxy_base: str = Field(default="https://proxy.jhun.edu.kg", alias="STATIC_ASSETS_PROXY_BASE")
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -407,6 +411,8 @@ USER_SESSION_MAX_AGE: int = settings.user_session_max_age
 TOKEN_ENCRYPT_KEY: str = settings.token_encrypt_key
 TOKEN_HEALTH_CHECK_INTERVAL: int = settings.token_health_check_interval
 TOKEN_MIN_SUCCESS_RATE: float = settings.token_min_success_rate
+STATIC_ASSETS_PROXY_ENABLED: bool = settings.static_assets_proxy_enabled
+STATIC_ASSETS_PROXY_BASE: str = settings.static_assets_proxy_base
 
 # OAuth2 LinuxDo endpoints
 OAUTH_AUTHORIZATION_URL: str = "https://connect.linux.do/oauth2/authorize"
@@ -456,6 +462,7 @@ MODEL_MAPPING: Dict[str, str] = {
 
     # Claude Haiku 4.5 - Fast model
     "claude-haiku-4-5": "claude-haiku-4.5",
+    "claude-haiku-4-5-20251001": "claude-haiku-4.5",
     "claude-haiku-4.5": "claude-haiku-4.5",
 
     # Claude Sonnet 4.5 - Enhanced model
@@ -478,6 +485,7 @@ AVAILABLE_MODELS: List[str] = [
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
     "claude-sonnet-4-5",
     "claude-sonnet-4-5-20250929",
     "claude-sonnet-4",

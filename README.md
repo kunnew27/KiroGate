@@ -72,28 +72,35 @@ python main.py
 ### Docker 部署
 
 ```bash
-# 方式一: 使用 docker-compose（推荐）
+# 方式一: 使用预构建镜像（推荐）
+docker run -d -p 8000:8000 \
+  -e PROXY_API_KEY="your-password" \
+  -v kirogate_data:/app/data \
+  --name kirogate \
+  ghcr.io/dext7r/kirogate:main
+
+# 方式二: 使用 docker-compose
 cp .env.example .env
 # 编辑 .env 填写你的凭证
 docker-compose up -d
 
-# 方式二: 直接运行（简单模式）
+# 方式三: 本地构建运行
 docker build -t kirogate .
 docker run -d -p 8000:8000 \
   -e PROXY_API_KEY="your-password" \
-  -e REFRESH_TOKEN="your-kiro-refresh-token" \
+  -v kirogate_data:/app/data \
   --name kirogate kirogate
-
-# 方式三: 组合模式（推荐 - 无需配置 REFRESH_TOKEN）
-docker build -t kirogate .
-docker run -d -p 8000:8000 \
-  -e PROXY_API_KEY="your-password" \
-  --name kirogate kirogate
-# 用户在请求中传递 PROXY_API_KEY:REFRESH_TOKEN
 
 # 查看日志
 docker logs -f kirogate
 ```
+
+**镜像标签说明：**
+| 标签 | 说明 |
+|------|------|
+| `ghcr.io/dext7r/kirogate:main` | 最新 main 分支构建 |
+| `ghcr.io/dext7r/kirogate:v1.0.0` | 指定版本（推荐生产使用） |
+| `ghcr.io/dext7r/kirogate:<sha>` | 指定 commit 构建 |
 
 ### Fly.io 部署
 
@@ -114,6 +121,10 @@ fly volumes create kirogate_data --region nrt --size 1
 fly secrets set PROXY_API_KEY="your-password"
 fly secrets set ADMIN_PASSWORD="your-admin-password"
 fly secrets set ADMIN_SECRET_KEY="your-random-secret"
+
+# 推荐：关闭静态资源代理（国外服务器直连 CDN 更快）
+fly secrets set STATIC_ASSETS_PROXY_ENABLED=false
+
 # 可选：OAuth2 配置
 fly secrets set OAUTH_CLIENT_ID="..."
 fly secrets set OAUTH_CLIENT_SECRET="..."
@@ -240,6 +251,26 @@ STREAM_READ_TIMEOUT="120"
 # 对于复杂请求，建议 300-600 秒
 NON_STREAM_TIMEOUT="600"
 ```
+
+### 静态资源代理配置
+
+KiroGate 默认使用代理服务器加载前端静态资源（Tailwind、ECharts 等），适合国内服务器环境。
+
+```env
+# 是否启用静态资源代理（默认: true）
+# 国内服务器建议启用代理以加速 CDN 访问
+# 国外服务器（如 Fly.io）可关闭代理，直连 CDN 更快
+STATIC_ASSETS_PROXY_ENABLED=true
+
+# 静态资源代理服务器地址（默认: https://proxy.jhun.edu.kg）
+# 仅在 STATIC_ASSETS_PROXY_ENABLED=true 时生效
+STATIC_ASSETS_PROXY_BASE="https://proxy.jhun.edu.kg"
+```
+
+**使用场景：**
+- ✅ **国内服务器**：保持 `STATIC_ASSETS_PROXY_ENABLED=true`（默认）
+- ✅ **国外服务器/Fly.io**：设置 `STATIC_ASSETS_PROXY_ENABLED=false`
+- ✅ **自定义代理**：修改 `STATIC_ASSETS_PROXY_BASE` 地址
 
 ### 获取 Refresh Token
 

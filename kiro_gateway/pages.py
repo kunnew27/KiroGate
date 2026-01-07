@@ -6,12 +6,31 @@ KiroGate Frontend Pages.
 HTML templates for the web interface.
 """
 
-from kiro_gateway.config import APP_VERSION, AVAILABLE_MODELS
+from kiro_gateway.config import APP_VERSION, AVAILABLE_MODELS, STATIC_ASSETS_PROXY_ENABLED, STATIC_ASSETS_PROXY_BASE
 import html
 import json
 
-# Static assets proxy base
-PROXY_BASE = "https://proxy.jhun.edu.kg"
+
+def get_asset_url(cdn_url: str) -> str:
+    """
+    根据配置返回静态资源 URL。
+
+    Args:
+        cdn_url: 原始 CDN URL (例如: "cdn.tailwindcss.com" 或 "cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js")
+
+    Returns:
+        完整的资源 URL
+    """
+    if STATIC_ASSETS_PROXY_ENABLED:
+        # 使用代理
+        return f"{STATIC_ASSETS_PROXY_BASE}/proxy/{cdn_url}"
+    else:
+        # 直接访问 CDN
+        return f"https://{cdn_url}"
+
+
+# 兼容性：保留旧的 PROXY_BASE 变量名（已废弃，请使用 get_asset_url）
+PROXY_BASE = STATIC_ASSETS_PROXY_BASE if STATIC_ASSETS_PROXY_ENABLED else ""
 
 # SEO and common head
 COMMON_HEAD = r'''
@@ -42,9 +61,9 @@ COMMON_HEAD = r'''
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <script src="{PROXY_BASE}/proxy/cdn.tailwindcss.com"></script>
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     :root {{
       --primary: #38bdf8;
@@ -558,6 +577,9 @@ COMMON_HEAD = r'''
   </script>
 '''
 
+# 还原 COMMON_HEAD 中为兼容 f-string 而写入的双大括号，避免输出到页面后出现语法错误。
+COMMON_HEAD = COMMON_HEAD.replace("{{", "{").replace("}}", "}")
+
 COMMON_NAV = r'''
   <nav style="background: var(--bg-nav); border-bottom: 1px solid var(--border); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);" class="sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -620,7 +642,7 @@ COMMON_NAV = r'''
       </div>
     </div>
   </nav>
-  <div id="siteModeBanner" class="mode-banner">
+  <div id="siteModeBanner" class="mode-banner" style="display: none;">
     <div class="max-w-7xl mx-auto px-4 py-2 flex items-center gap-2">
       <span class="text-xs sm:text-sm" style="color: var(--text-muted);">当前模式：</span>
       <span id="siteModeText" class="mode-pill normal">正常运行</span>
@@ -635,7 +657,7 @@ COMMON_NAV = r'''
           <div id="siteAnnouncementContent" class="text-sm content"></div>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div id="announcementActions" class="flex items-center gap-2">
         <button onclick="markAnnouncementRead()" class="btn-announcement">已读</button>
         <button onclick="dismissAnnouncement()" class="btn-announcement-outline">不再提醒</button>
       </div>
@@ -655,7 +677,8 @@ COMMON_NAV = r'''
 
     (function() {{
       const modeEl = document.getElementById('siteModeText');
-      if (!modeEl) return;
+      const banner = document.getElementById('siteModeBanner');
+      if (!modeEl || !banner) return;
       fetch('/api/site-mode')
         .then(r => r.ok ? r.json() : null)
         .then(d => {{
@@ -664,6 +687,13 @@ COMMON_NAV = r'''
           modeEl.classList.remove('normal', 'self-use', 'maintenance');
           const cls = d.mode === 'self_use' ? 'self-use' : d.mode === 'maintenance' ? 'maintenance' : 'normal';
           modeEl.classList.add(cls);
+
+          // 只在非正常模式时显示横幅
+          if (d.mode === 'normal') {{
+            banner.style.display = 'none';
+          }} else {{
+            banner.style.display = 'block';
+          }}
         }})
         .catch(() => {{}});
     }})();
@@ -682,9 +712,14 @@ COMMON_NAV = r'''
         currentAnnouncementId = d.announcement.id;
         const banner = document.getElementById('siteAnnouncement');
         const content = document.getElementById('siteAnnouncementContent');
+        const actions = document.getElementById('announcementActions');
+        const canMark = d.can_mark !== false;
         if (banner && content) {{
-          content.textContent = d.announcement.content;
+          content.innerHTML = d.announcement.content;
           banner.style.display = 'block';
+        }}
+        if (actions) {{
+          actions.style.display = canMark ? 'flex' : 'none';
         }}
       }} catch {{}}
     }}
@@ -774,9 +809,10 @@ COMMON_NAV = r'''
               <span>${{safeName || '用户中心'}}</span>
             </a>`;
           }}
-          loadAnnouncement();
         }}
-      }} catch {{}}
+      }} catch {{}} finally {{
+        loadAnnouncement();
+      }}
     }})();
   </script>
 '''
@@ -792,19 +828,11 @@ COMMON_FOOTER = '''
         <p class="text-sm text-center mb-4" style="color: var(--text-muted);">OpenAI & Anthropic 兼容的 Kiro API 网关</p>
         <div class="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm mb-6">
           <span class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-green-400"></span>
-            <span style="color: var(--text);">Deno</span>
-            <a href="https://kirogate.deno.dev" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">Demo</a>
-            <span style="color: var(--border-dark);">·</span>
-            <a href="https://github.com/dext7r/KiroGate" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">GitHub</a>
-          </span>
-          <span class="hidden sm:inline" style="color: var(--border-dark);">|</span>
-          <span class="flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-blue-400"></span>
             <span style="color: var(--text);">Python</span>
-            <a href="https://kirogate.fly.dev" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">Demo</a>
+            <a href="https://kirogate.fly.dev" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">Online</a>
             <span style="color: var(--border-dark);">·</span>
-            <a href="https://github.com/aliom-v/KiroGate" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">GitHub</a>
+            <a href="https://github.com/dext7r/KiroGate" class="text-indigo-400 hover:text-indigo-300 transition-colors" target="_blank">GitHub</a>
           </span>
         </div>
         <p class="text-xs opacity-60" style="color: var(--text-muted);">欲买桂花同载酒 终不似少年游</p>
@@ -812,6 +840,11 @@ COMMON_FOOTER = '''
     </div>
   </footer>
 '''
+
+# 还原 COMMON_NAV 中为兼容 f-string 而写入的双大括号，避免前端脚本语法错误。
+COMMON_NAV = COMMON_NAV.replace("{{", "{").replace("}}", "}")
+# 填充版本号占位符。
+COMMON_NAV = COMMON_NAV.replace("{APP_VERSION}", APP_VERSION)
 
 # 移除旧的 THEME_SCRIPT，已经集成到 COMMON_NAV 中
 
@@ -920,11 +953,11 @@ def render_home_page() -> str:
 
   <script>
     // 等待 echarts 加载完成
-    function initModelsChart() {
-      if (typeof echarts === 'undefined') {
+    function initModelsChart() {{
+      if (typeof echarts === 'undefined') {{
         setTimeout(initModelsChart, 100);
         return;
-      }
+      }}
       const modelsChart = echarts.init(document.getElementById('modelsChart'));
       const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
       modelsChart.setOption({{
@@ -971,14 +1004,14 @@ def render_home_page() -> str:
       }}]
     }});
     window.addEventListener('resize', () => modelsChart.resize());
-    }
+    }}
 
     // 页面加载完成后初始化图表
-    if (document.readyState === 'loading') {
+    if (document.readyState === 'loading') {{
       document.addEventListener('DOMContentLoaded', initModelsChart);
-    } else {
+    }} else {{
       initModelsChart();
-    }
+    }}
   </script>
 </body>
 </html>'''
@@ -2030,7 +2063,7 @@ def render_swagger_page() -> str:
 <html lang="zh">
 <head>
   {COMMON_HEAD}
-  <link rel="stylesheet" href="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="{get_asset_url("cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css")}">
   <style>
     .swagger-ui .topbar {{ display: none; }}
     .swagger-ui .info .title {{ font-size: 2rem; }}
@@ -2049,7 +2082,7 @@ def render_swagger_page() -> str:
     <div id="swagger-ui"></div>
   </main>
   {COMMON_FOOTER}
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="{get_asset_url("cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js")}"></script>
   <script>
     window.onload = function() {{
       SwaggerUIBundle({{
@@ -2091,7 +2124,7 @@ def render_admin_login_page(error: str = "") -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Login - KiroGate</title>
   <meta name="robots" content="noindex, nofollow">
-  <script src="{PROXY_BASE}/proxy/cdn.tailwindcss.com"></script>
+  <script src="{get_asset_url("cdn.tailwindcss.com")}"></script>
   <style>
     :root {{ --bg-main: #f4f7fb; --bg-card: rgba(255, 255, 255, 0.82); --text: #0f172a; --text-muted: #64748b; --border: rgba(148, 163, 184, 0.35); --primary: #38bdf8; --bg-input: rgba(255, 255, 255, 0.9); }}
     .dark {{ --bg-main: #05070f; --bg-card: rgba(15, 23, 42, 0.8); --text: #e2e8f0; --text-muted: #94a3b8; --border: rgba(148, 163, 184, 0.2); --bg-input: rgba(15, 23, 42, 0.85); }}
@@ -2631,7 +2664,13 @@ def render_admin_page() -> str:
         </div>
         <textarea id="announcementContent" class="w-full h-36 p-3 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="请输入公告内容..."></textarea>
         <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
-          <span class="text-xs" style="color: var(--text-muted);">最近更新：<span id="announcementUpdatedAt">-</span></span>
+          <div class="flex flex-wrap items-center gap-4 text-xs" style="color: var(--text-muted);">
+            <span>最近更新：<span id="announcementUpdatedAt">-</span></span>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" id="announcementGuestToggle">
+              <span>未登录可见</span>
+            </label>
+          </div>
           <div class="flex items-center gap-2">
             <button onclick="refreshAnnouncement()" class="btn" style="background: var(--bg-input); border: 1px solid var(--border);">刷新</button>
             <button onclick="saveAnnouncement()" class="btn btn-primary">保存</button>
@@ -2681,6 +2720,43 @@ def render_admin_page() -> str:
               <button onclick="saveProxyApiKey()" class="btn btn-primary">保存</button>
             </div>
             <p class="text-xs" style="color: var(--text-muted);">保存后立即生效，旧 Key 会失效。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="text-lg font-semibold mb-4">💾 数据导入导出</h2>
+          <div class="space-y-4">
+            <div class="space-y-2">
+              <div class="text-sm font-medium">导出选择（支持单选/多选）</div>
+              <select id="dbExportSelect" multiple size="2" class="w-full rounded px-3 py-2 text-sm"
+                style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
+                <option value="users">用户数据库（加载中）</option>
+                <option value="metrics">统计数据库（加载中）</option>
+              </select>
+              <div class="flex flex-wrap items-center gap-2">
+                <button onclick="selectAllDbOptions('dbExportSelect', true)" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">全选</button>
+                <button onclick="selectAllDbOptions('dbExportSelect', false)" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">清空</button>
+                <button onclick="exportDatabase()" class="btn btn-primary">导出所选（zip）</button>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="text-sm font-medium">导入（先解析再确认）</div>
+              <input id="dbImportFile" type="file" accept=".zip,.db" class="w-full rounded px-3 py-2 text-sm"
+                style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
+              <div class="flex flex-wrap items-center gap-2">
+                <button onclick="previewDatabaseImport()" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">解析文件</button>
+                <button id="dbImportConfirmBtn" onclick="confirmDatabaseImport()" class="btn btn-primary" disabled>确认导入</button>
+              </div>
+              <select id="dbImportSelect" multiple size="2" class="w-full rounded px-3 py-2 text-sm"
+                style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
+                <option disabled>请先解析导出文件</option>
+              </select>
+              <p id="dbImportStatus" class="text-xs" style="color: var(--text-muted);">导入前会校验数据库结构。</p>
+            </div>
+            <p class="text-xs" style="color: var(--text-muted);">导入会覆盖现有数据，建议先导出备份；完成后请重启服务以加载最新数据。</p>
           </div>
         </div>
 
@@ -2754,6 +2830,8 @@ def render_admin_page() -> str:
         const ann = d.announcement || null;
         currentAnnouncementId = ann ? ann.id : null;
         document.getElementById('announcementContent').value = ann?.content || '';
+        const guestToggle = document.getElementById('announcementGuestToggle');
+        if (guestToggle) guestToggle.checked = !!ann?.allow_guest;
         document.getElementById('announcementToggle').checked = !!d.is_active;
         const updated = ann?.updated_at ? new Date(ann.updated_at).toLocaleString() : '-';
         document.getElementById('announcementUpdatedAt').textContent = updated;
@@ -2763,6 +2841,7 @@ def render_admin_page() -> str:
     async function saveAnnouncement() {{
       const content = document.getElementById('announcementContent').value.trim();
       const isActive = document.getElementById('announcementToggle').checked;
+      const allowGuest = document.getElementById('announcementGuestToggle')?.checked;
       if (isActive && !content) {{
         alert('请填写公告内容');
         return;
@@ -2770,6 +2849,7 @@ def render_admin_page() -> str:
       const fd = new FormData();
       fd.append('content', content);
       fd.append('is_active', isActive ? 'true' : 'false');
+      fd.append('allow_guest', allowGuest ? 'true' : 'false');
       try {{
         await fetchJson('/admin/api/announcement', {{ method: 'POST', body: fd }});
         alert('保存成功');
@@ -2824,6 +2904,149 @@ def render_admin_page() -> str:
         refreshProxyApiKey();
       }} catch (e) {{
         alert(e.error || '保存失败');
+      }}
+    }}
+
+    let dbImportToken = null;
+
+    function formatBytes(bytes) {{
+      const value = Number(bytes);
+      if (!Number.isFinite(value)) return '-';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = value;
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {{
+        size /= 1024;
+        idx += 1;
+      }}
+      const digits = idx === 0 ? 0 : (size >= 10 ? 0 : 1);
+      return `${{size.toFixed(digits)}} ${{units[idx]}}`;
+    }}
+
+    function setDbSelectOptions(selectId, items, autoSelectAll = false) {{
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      select.innerHTML = '';
+      items.forEach(item => {{
+        const option = document.createElement('option');
+        option.value = item.key;
+        const sizeText = item.exists === false ? '不存在' : formatBytes(item.size_bytes);
+        option.textContent = `${{item.label}}（${{sizeText}}）`;
+        option.disabled = item.exists === false;
+        option.selected = autoSelectAll && !option.disabled;
+        select.appendChild(option);
+      }});
+      if (!items.length) {{
+        const option = document.createElement('option');
+        option.textContent = '暂无可选项';
+        option.disabled = true;
+        select.appendChild(option);
+      }}
+    }}
+
+    function selectAllDbOptions(selectId, enabled) {{
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      Array.from(select.options).forEach(option => {{
+        if (!option.disabled) option.selected = !!enabled;
+      }});
+    }}
+
+    function getSelectedDbOptions(selectId) {{
+      const select = document.getElementById(selectId);
+      if (!select) return [];
+      return Array.from(select.selectedOptions).map(option => option.value).filter(Boolean);
+    }}
+
+    function getSelectedDbLabels(selectId) {{
+      const select = document.getElementById(selectId);
+      if (!select) return [];
+      return Array.from(select.selectedOptions).map(option => {{
+        const text = option.textContent || '';
+        return text.split('（')[0] || text;
+      }});
+    }}
+
+    function resetDbImportState(message) {{
+      dbImportToken = null;
+      setDbSelectOptions('dbImportSelect', [], false);
+      const status = document.getElementById('dbImportStatus');
+      if (status) status.textContent = message || '请先解析导出文件。';
+      const btn = document.getElementById('dbImportConfirmBtn');
+      if (btn) btn.disabled = true;
+    }}
+
+    async function loadDbInfo() {{
+      try {{
+        const d = await fetchJson('/admin/api/db/info');
+        const items = Array.isArray(d.items) ? d.items : [];
+        setDbSelectOptions('dbExportSelect', items, false);
+      }} catch (e) {{
+        setDbSelectOptions('dbExportSelect', [
+          {{ key: 'users', label: '用户数据库', size_bytes: null, exists: true }},
+          {{ key: 'metrics', label: '统计数据库', size_bytes: null, exists: true }},
+        ], false);
+      }}
+    }}
+
+    function exportDatabase() {{
+      const selected = getSelectedDbOptions('dbExportSelect');
+      if (!selected.length) {{
+        alert('请选择要导出的数据库');
+        return;
+      }}
+      const qs = new URLSearchParams();
+      qs.set('db_types', selected.join(','));
+      window.location.href = `/admin/api/db/export?${{qs.toString()}}`;
+    }}
+
+    async function previewDatabaseImport() {{
+      const input = document.getElementById('dbImportFile');
+      if (!input || !input.files || !input.files.length) {{
+        alert('请选择要导入的文件');
+        return;
+      }}
+      const fd = new FormData();
+      fd.append('file', input.files[0]);
+      try {{
+        const d = await fetchJson('/admin/api/db/import/preview', {{ method: 'POST', body: fd }});
+        dbImportToken = d.token || null;
+        const items = Array.isArray(d.items) ? d.items : [];
+        setDbSelectOptions('dbImportSelect', items, true);
+        const status = document.getElementById('dbImportStatus');
+        if (status) status.textContent = d.message || '解析完成，请选择需要导入的数据库。';
+        const btn = document.getElementById('dbImportConfirmBtn');
+        if (btn) btn.disabled = !dbImportToken || items.length === 0;
+      }} catch (e) {{
+        resetDbImportState(e.error || '解析失败');
+        alert(e.error || '解析失败');
+      }}
+    }}
+
+    async function confirmDatabaseImport() {{
+      const selected = getSelectedDbOptions('dbImportSelect');
+      if (!dbImportToken) {{
+        alert('请先解析导入文件');
+        return;
+      }}
+      if (!selected.length) {{
+        alert('请选择要导入的数据库');
+        return;
+      }}
+      const labels = getSelectedDbLabels('dbImportSelect').join('、');
+      if (!confirm(`确定导入：${{labels}} 吗？此操作会覆盖现有数据。`)) return;
+      const fd = new FormData();
+      fd.append('token', dbImportToken);
+      fd.append('db_types', selected.join(','));
+      try {{
+        const d = await fetchJson('/admin/api/db/import/confirm', {{ method: 'POST', body: fd }});
+        alert(d.message || '导入完成');
+        const input = document.getElementById('dbImportFile');
+        if (input) input.value = '';
+        resetDbImportState('导入完成，请在需要时重新解析文件。');
+        loadDbInfo();
+      }} catch (e) {{
+        alert(e.error || '导入失败');
       }}
     }}
 
@@ -3849,6 +4072,14 @@ def render_admin_page() -> str:
     refreshStats();
     refreshAnnouncement();
     refreshProxyApiKey();
+    loadDbInfo();
+    resetDbImportState('请先上传并解析导出文件。');
+    const dbImportFile = document.getElementById('dbImportFile');
+    if (dbImportFile) {{
+      dbImportFile.addEventListener('change', () => {{
+        resetDbImportState('已选择新文件，请先解析。');
+      }});
+    }}
     setInterval(refreshStats, 10000);
 
     // Theme management
@@ -3900,21 +4131,21 @@ def render_user_page(user) -> str:
         user_info = ''
     user_info_html = f'<div class="mt-1">{user_info}</div>' if user_info else ''
 
-    return f'''<!DOCTYPE html>
+    page_template = '''<!DOCTYPE html>
 <html lang="zh">
-<head>{COMMON_HEAD}</head>
-<body data-self-use="{body_self_use_attr}">
-  {COMMON_NAV}
+<head>__COMMON_HEAD__</head>
+<body data-self-use="__BODY_SELF_USE_ATTR__">
+  __COMMON_NAV__
   <main class="max-w-6xl mx-auto px-4 py-8">
     <div class="card mb-6 user-hero">
       <div class="flex flex-col sm:flex-row sm:items-center gap-4">
-        {avatar_html}
+        __AVATAR_HTML__
         <div class="flex-1">
           <div class="flex items-center gap-2 flex-wrap">
-            <h1 class="text-2xl font-bold">你好，{display_name}</h1>
+            <h1 class="text-2xl font-bold">你好，__DISPLAY_NAME__</h1>
           </div>
           <p id="greetingText" class="text-sm" style="color: var(--text-muted);">欢迎回来，今天想先做什么？</p>
-          {user_info_html}
+          __USER_INFO_HTML__
           <div class="flex flex-wrap gap-2 mt-3">
             <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine'); showDonateModal();" class="btn-primary text-sm px-3 py-1.5">+ 添加 Token</button>
             <button type="button" onclick="showTab('keys'); generateKey();" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">生成 API Key</button>
@@ -4173,70 +4404,42 @@ def render_user_page(user) -> str:
   </main>
   <div id="donateModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" style="display: none;">
     <div class="card w-full max-w-md mx-4">
-      <h3 class="text-lg font-bold mb-4">🎁 添加 Refresh Token</h3>
+      <h3 class="text-lg font-bold mb-4">🎁 批量添加 Refresh Token</h3>
 
-      <!-- 模式选择 -->
-      <div class="flex gap-1 mb-4 p-1 rounded-lg" style="background: var(--bg-input);">
-        <button onclick="setDonateMode('private')" id="donateMode-private" class="donate-mode-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all active">🔐 个人使用</button>
-        <button onclick="setDonateMode('public')" id="donateMode-public" class="donate-mode-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all public-only">🌐 公开添加</button>
+      <!-- Token 输入区域 -->
+      <div class="mb-3">
+        <label class="text-sm font-medium mb-2 block">📝 粘贴 Token</label>
+        <textarea id="donateTokens" class="w-full h-32 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="支持以下格式：&#10;• 每行一个 Token&#10;• 逗号分隔：token1, token2, token3&#10;• 混合格式"></textarea>
+        <p class="text-xs mt-1" style="color: var(--text-muted);">💡 支持多行或逗号分隔，自动去除空行和重复项</p>
       </div>
 
-      <!-- 模式说明 -->
-      <div id="donateDesc-private" class="mb-4 p-3 rounded-lg text-sm" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3);">
-        <p class="font-medium text-indigo-400 mb-1">💡 个人使用模式</p>
-        <ul class="space-y-1" style="color: var(--text-muted);">
-          <li>• Token 仅供您自己使用</li>
-          <li>• 不会加入公共 Token 池</li>
-          <li>• 适合保护个人配额不被他人消耗</li>
-        </ul>
-      </div>
-      <div id="donateDesc-public" class="mb-4 p-3 rounded-lg text-sm public-only" style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); display: none;">
-        <p class="font-medium text-green-400 mb-1">🌍 公开添加模式</p>
-        <ul class="space-y-1" style="color: var(--text-muted);">
-          <li>• Token 加入公共池供所有用户共享</li>
-          <li>• 帮助社区其他成员使用服务</li>
-          <li>• 您仍可随时切换为私有或删除</li>
-        </ul>
+      <!-- 文件上传 -->
+      <div class="mb-4">
+        <label class="text-sm font-medium mb-2 block">📁 或上传 JSON 文件</label>
+        <input id="donateFile" type="file" accept=".json" class="w-full text-sm p-2 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">
+        <p class="text-xs mt-1" style="color: var(--text-muted);">支持 Kiro Account Manager 导出的 JSON 文件</p>
       </div>
 
-      <textarea id="donateToken" class="w-full h-28 p-3 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴你的 Refresh Token..."></textarea>
-
-      <div class="mt-4 p-3 rounded-lg" style="background: var(--bg-input); border: 1px dashed var(--border);">
-        <div class="flex items-center justify-between mb-2">
-          <span class="text-sm font-medium">📥 批量导入</span>
-          <button onclick="importTokens()" class="btn-primary text-sm">导入</button>
-        </div>
-        <div class="flex gap-1 mb-3 p-1 rounded-lg" style="background: var(--bg-input);">
-          <button onclick="setImportMode('file')" id="importMode-file" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all active">文件</button>
-          <button onclick="setImportMode('tokens')" id="importMode-tokens" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">复制</button>
-          <button onclick="setImportMode('json')" id="importMode-json" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">粘贴 JSON</button>
-        </div>
-        <input type="hidden" id="importMode" value="file">
-
-        <div id="importPanel-file">
-          <input id="donateImportFile" type="file" accept=".json" class="w-full text-sm">
-          <input id="donateImportPath" type="text" class="w-full mt-2 p-2 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="/Users/.../kiro-accounts-xxxx.json">
-          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 Kiro Account Manager 导出文件，仅读取 refreshToken 字段并逐个验证。路径导入仅支持项目目录内文件。</p>
-        </div>
-
-        <div id="importPanel-tokens" style="display: none;">
-          <textarea id="donateImportTokens" class="w-full h-24 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴 refreshToken，每行一个或用逗号/空格分隔"></textarea>
-          <p class="text-xs mt-2" style="color: var(--text-muted);">示例：<code class="bg-black/20 px-1 rounded">aor... \\n aor...</code></p>
-        </div>
-
-        <div id="importPanel-json" style="display: none;">
-          <textarea id="donateImportJson" class="w-full h-28 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder='{"accounts":[{"credentials":{"refreshToken":"aor..."}}]}'></textarea>
-          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 JSON 字符串/数组/对象，仅识别 refreshToken 字段：<code class="bg-black/20 px-1 rounded">["aor...","aor..."]</code></p>
+      <!-- 可见性选择 -->
+      <div class="mb-3">
+        <label class="text-sm font-medium mb-2 block">🔒 可见性设置</label>
+        <div class="flex gap-2">
+          <button onclick="setDonateMode('private')" id="donateMode-private" class="donate-mode-btn flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all" style="background: var(--bg-input); border: 1px solid var(--border);">
+            🔐 私有
+          </button>
+          <button onclick="setDonateMode('public')" id="donateMode-public" class="donate-mode-btn flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all public-only" style="background: var(--bg-input); border: 1px solid var(--border);">
+            🌐 公开
+          </button>
         </div>
       </div>
 
       <!-- 匿名选项（仅公开模式显示） -->
-      <div id="anonymousOption" class="mt-3 p-3 rounded-lg public-only" style="background: var(--bg-input); display: none;">
-        <label class="flex items-center gap-3 cursor-pointer">
+      <div id="anonymousOption" class="mb-4 p-3 rounded-lg public-only" style="background: var(--bg-input); border: 1px solid var(--border); display: none;">
+        <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" id="donateAnonymous" class="w-4 h-4 rounded">
-          <div>
-            <span class="font-medium">匿名添加</span>
-            <p class="text-xs mt-0.5" style="color: var(--text-muted);">勾选后其他用户将看不到您的用户名</p>
+          <div class="text-sm">
+            <span class="font-medium">匿名贡献</span>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted);">不显示您的用户名</p>
           </div>
         </label>
       </div>
@@ -4245,7 +4448,7 @@ def render_user_page(user) -> str:
 
       <div class="flex justify-end gap-2 mt-4">
         <button onclick="hideDonateModal()" class="px-4 py-2 rounded-lg" style="background: var(--bg-input);">取消</button>
-        <button onclick="donateToken()" class="btn-primary">提交</button>
+        <button onclick="submitTokens()" class="btn-primary">提交并导入</button>
       </div>
     </div>
   </div>
@@ -4289,7 +4492,7 @@ def render_user_page(user) -> str:
       </div>
     </div>
   </div>
-  {COMMON_FOOTER}
+  __COMMON_FOOTER__
   <style>
     .user-hero {{
       border: 1px solid rgba(56, 189, 248, 0.25);
@@ -4370,7 +4573,7 @@ def render_user_page(user) -> str:
     let confirmCallback = null;
     let keyNameCallback = null;
     let userHasTokens = false;
-    const SELF_USE_MODE = {str(self_use_enabled).lower()};
+    const SELF_USE_MODE = __SELF_USE_MODE__;
 
     // Token 表格状态
     let allTokens = [];
@@ -5033,56 +5236,31 @@ def render_user_page(user) -> str:
       document.getElementById('donateModal').style.display = 'flex';
       if (SELF_USE_MODE) setDonateMode('private');
     }}
+
     function hideDonateModal() {{
       document.getElementById('donateModal').style.display = 'none';
       setDonateMode('private');
-      setImportMode('file');
-      document.getElementById('donateToken').value = '';
+      document.getElementById('donateTokens').value = '';
+      document.getElementById('donateFile').value = '';
       document.getElementById('donateAnonymous').checked = false;
-      const importFile = document.getElementById('donateImportFile');
-      if (importFile) importFile.value = '';
-      const importPath = document.getElementById('donateImportPath');
-      if (importPath) importPath.value = '';
-      const importTokens = document.getElementById('donateImportTokens');
-      if (importTokens) importTokens.value = '';
-      const importJson = document.getElementById('donateImportJson');
-      if (importJson) importJson.value = '';
     }}
 
     function setDonateMode(mode) {{
       if (SELF_USE_MODE && mode === 'public') mode = 'private';
       const privateBtn = document.getElementById('donateMode-private');
       const publicBtn = document.getElementById('donateMode-public');
-      const privateDesc = document.getElementById('donateDesc-private');
-      const publicDesc = document.getElementById('donateDesc-public');
       const anonOption = document.getElementById('anonymousOption');
 
       if (mode === 'private') {{
         privateBtn.classList.add('active');
         if (publicBtn) publicBtn.classList.remove('active');
-        privateDesc.style.display = 'block';
-        if (publicDesc) publicDesc.style.display = 'none';
         anonOption.style.display = 'none';
       }} else {{
         privateBtn.classList.remove('active');
         if (publicBtn) publicBtn.classList.add('active');
-        privateDesc.style.display = 'none';
-        if (publicDesc) publicDesc.style.display = 'block';
         anonOption.style.display = 'block';
       }}
       document.getElementById('donateVisibility').value = mode;
-    }}
-
-    function setImportMode(mode) {{
-      const modes = ['file', 'tokens', 'json'];
-      modes.forEach(m => {{
-        const btn = document.getElementById('importMode-' + m);
-        const panel = document.getElementById('importPanel-' + m);
-        if (btn) btn.classList.toggle('active', m === mode);
-        if (panel) panel.style.display = m === mode ? 'block' : 'none';
-      }});
-      const modeInput = document.getElementById('importMode');
-      if (modeInput) modeInput.value = mode;
     }}
 
     function showKeyModal(key, usePublicPool) {{
@@ -5120,105 +5298,78 @@ def render_user_page(user) -> str:
       }}
     }}
 
-    async function donateToken() {{
-      const token = document.getElementById('donateToken').value.trim();
-      if (!token) return showConfirmModal({{ title: '提示', message: '请输入 Token', icon: '💡', confirmText: '好的', danger: false }});
-      const hadTokens = userHasTokens;
-      const visibility = document.getElementById('donateVisibility').value;
-      if (SELF_USE_MODE && visibility === 'public') {{
-        return showConfirmModal({{ title: '提示', message: '自用模式下禁止公开 Token，请选择个人使用。', icon: '🔒', confirmText: '好的', danger: false }});
-      }}
-      const anonymous = document.getElementById('donateAnonymous').checked;
-      const fd = new FormData();
-      fd.append('refresh_token', token);
-      fd.append('visibility', visibility);
-      if (visibility === 'public' && anonymous) fd.append('anonymous', 'true');
-      try {{
-        const r = await fetch('/user/api/tokens', {{ method: 'POST', body: fd }});
-        const d = await r.json();
-        if (d.success) {{
-          const isPublic = visibility === 'public';
-          let thanks = '感谢你的支持，Token 已添加成功。';
-          if (isPublic) {{
-            thanks = anonymous
-              ? '感谢你的公开贡献，Token 已以匿名方式加入公共池。'
-              : '感谢你的公开贡献，Token 已加入公共池并展示你的昵称。';
-          }} else if (!hadTokens) {{
-            thanks = '感谢你的支持，这是你的第一个 Token。';
-          }}
-          let nextStep = '你可以继续管理 Token 或生成 API Key。';
-          if (!hadTokens) {{
-            nextStep = '下一步可生成 API Key 或去测试。';
-          }} else if (isPublic) {{
-            nextStep = '你可以继续管理 Token 或查看公开池。';
-          }}
-          await showConfirmModal({{ title: '成功', message: `${{thanks}} ${{nextStep}}`, icon: '🎉', confirmText: '好的', danger: false }});
-          hideDonateModal();
-          document.getElementById('donateToken').value = '';
-          loadTokens();
-          loadProfile();
-        }} else {{
-          showConfirmModal({{ title: '失败', message: d.error || d.message || '添加失败', icon: '❌', confirmText: '好的', danger: false }});
-        }}
-      }} catch (e) {{
-        showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});
-      }}
-    }}
-
-    async function importTokens() {{
-      const mode = document.getElementById('importMode')?.value || 'file';
-      const fileInput = document.getElementById('donateImportFile');
+    async function submitTokens() {{
+      // 获取输入
+      const tokensText = document.getElementById('donateTokens').value.trim();
+      const fileInput = document.getElementById('donateFile');
       const file = fileInput?.files?.[0] || null;
-      const pathInput = document.getElementById('donateImportPath');
-      const filePath = pathInput?.value?.trim() || '';
-      const tokensInput = document.getElementById('donateImportTokens');
-      const tokensText = tokensInput?.value?.trim() || '';
-      const jsonInput = document.getElementById('donateImportJson');
-      const jsonText = jsonInput?.value?.trim() || '';
-      if (mode === 'file' && !file && !filePath) {{
-        return showConfirmModal({{ title: '提示', message: '请上传 JSON 文件或填写文件路径', icon: '💡', confirmText: '好的', danger: false }});
-      }}
-      if (mode === 'tokens' && !tokensText) {{
-        return showConfirmModal({{ title: '提示', message: '请粘贴 refreshToken 列表', icon: '💡', confirmText: '好的', danger: false }});
-      }}
-      if (mode === 'json' && !jsonText) {{
-        return showConfirmModal({{ title: '提示', message: '请粘贴 JSON 内容', icon: '💡', confirmText: '好的', danger: false }});
+
+      // 验证至少有一个输入
+      if (!tokensText && !file) {{
+        return showConfirmModal({{
+          title: '提示',
+          message: '请粘贴 Token 或上传 JSON 文件',
+          icon: '💡',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
 
+      // 获取设置
       const visibility = document.getElementById('donateVisibility').value;
       if (SELF_USE_MODE && visibility === 'public') {{
-        return showConfirmModal({{ title: '提示', message: '自用模式下禁止公开 Token，请选择个人使用。', icon: '🔒', confirmText: '好的', danger: false }});
+        return showConfirmModal({{
+          title: '提示',
+          message: '自用模式下禁止公开 Token，请选择个人使用。',
+          icon: '🔒',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
       const anonymous = document.getElementById('donateAnonymous').checked;
 
+      // 构建请求
       const fd = new FormData();
-      if (mode === 'file') {{
-        if (file) {{
-          fd.append('file', file);
-        }} else {{
-          fd.append('file_path', filePath);
-        }}
-      }} else if (mode === 'tokens') {{
-        fd.append('tokens_text', tokensText);
+      if (file) {{
+        fd.append('file', file);
       }} else {{
-        fd.append('json_text', jsonText);
+        fd.append('tokens_text', tokensText);
       }}
       fd.append('visibility', visibility);
       if (visibility === 'public' && anonymous) fd.append('anonymous', 'true');
 
+      // 提交
       try {{
         const r = await fetch('/user/api/tokens/import', {{ method: 'POST', body: fd }});
         const d = await r.json();
         if (r.ok && d.success) {{
-          await showConfirmModal({{ title: '导入完成', message: d.message || '导入成功', icon: '🎉', confirmText: '好的', danger: false }});
+          await showConfirmModal({{
+            title: '导入完成',
+            message: d.message || '导入成功',
+            icon: '🎉',
+            confirmText: '好的',
+            danger: false
+          }});
           hideDonateModal();
           loadTokens();
           loadProfile();
         }} else {{
-          showConfirmModal({{ title: '导入失败', message: d.error || d.message || '导入失败', icon: '❌', confirmText: '好的', danger: false }});
+          showConfirmModal({{
+            title: '导入失败',
+            message: d.error || d.message || '导入失败',
+            icon: '❌',
+            confirmText: '好的',
+            danger: false
+          }});
         }}
       }} catch (e) {{
-        showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});
+        showConfirmModal({{
+          title: '错误',
+          message: '请求失败，请稍后重试',
+          icon: '❌',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
     }}
 
@@ -5499,6 +5650,22 @@ def render_user_page(user) -> str:
 </body>
 </html>'''
 
+    # Unescape doubled braces from the original f-string so JS/CSS renders correctly.
+    page_template = page_template.replace("{{", "{").replace("}}", "}")
+    replacements = {
+        "__COMMON_HEAD__": COMMON_HEAD,
+        "__BODY_SELF_USE_ATTR__": body_self_use_attr,
+        "__COMMON_NAV__": COMMON_NAV,
+        "__AVATAR_HTML__": avatar_html,
+        "__DISPLAY_NAME__": display_name,
+        "__USER_INFO_HTML__": user_info_html,
+        "__COMMON_FOOTER__": COMMON_FOOTER,
+        "__SELF_USE_MODE__": str(self_use_enabled).lower(),
+    }
+    for placeholder, value in replacements.items():
+        page_template = page_template.replace(placeholder, value)
+    return page_template
+
 
 def render_tokens_page(user=None) -> str:
     """Render the public token pool page."""
@@ -5627,9 +5794,46 @@ def render_tokens_page(user=None) -> str:
 def render_login_page() -> str:
     """Render the login selection page with multiple OAuth2 providers."""
     from kiro_gateway.metrics import metrics
+    from kiro_gateway.config import OAUTH_CLIENT_ID, GITHUB_CLIENT_ID
 
     self_use_enabled = metrics.is_self_use_enabled()
     body_self_use_attr = "true" if self_use_enabled else "false"
+
+    # 检查哪些登录方式已配置
+    linuxdo_enabled = bool(OAUTH_CLIENT_ID)
+    github_enabled = bool(GITHUB_CLIENT_ID)
+
+    # 生成登录按钮 HTML
+    login_buttons = ""
+    if linuxdo_enabled:
+        login_buttons += '''
+          <a href="/oauth2/login" class="btn-login btn-linuxdo">
+            <img src="https://linux.do/uploads/default/optimized/4X/c/c/d/ccd8c210609d498cbeb3d5201d4c259348447562_2_32x32.png" width="24" height="24" alt="LinuxDo" style="border-radius: 6px; background: white; padding: 2px;">
+            <span>LinuxDo 登录</span>
+          </a>
+        '''
+
+    if github_enabled:
+        login_buttons += '''
+          <a href="/oauth2/github/login" class="btn-login btn-github">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            <span>GitHub 登录</span>
+          </a>
+        '''
+
+    # 如果没有配置任何登录方式，显示提示
+    if not login_buttons:
+        login_buttons = '''
+          <div class="p-6 rounded-lg text-center" style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);">
+            <div class="text-3xl mb-3">⚠️</div>
+            <p class="font-medium mb-2" style="color: #d97706;">OAuth2 登录未配置</p>
+            <p class="text-sm" style="color: var(--text-muted);">请在 .env 文件中配置 LinuxDo 或 GitHub OAuth2 凭证</p>
+            <div class="mt-4 text-xs" style="color: var(--text-muted);">
+              参考文档：<a href="/docs" class="text-indigo-400 hover:underline">配置指南</a>
+            </div>
+          </div>
+        '''
+
     return f'''<!DOCTYPE html>
 <html lang="zh">
 <head>{COMMON_HEAD}
@@ -5681,15 +5885,7 @@ def render_login_page() -> str:
         </div>
 
         <div class="space-y-4">
-          <a href="/oauth2/login" class="btn-login btn-linuxdo">
-            <img src="https://linux.do/uploads/default/optimized/4X/c/c/d/ccd8c210609d498cbeb3d5201d4c259348447562_2_32x32.png" width="24" height="24" alt="LinuxDo" style="border-radius: 6px; background: white; padding: 2px;">
-            <span>LinuxDo 登录</span>
-          </a>
-
-          <a href="/oauth2/github/login" class="btn-login btn-github">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-            <span>GitHub 登录</span>
-          </a>
+          {login_buttons}
         </div>
 
         <div class="my-8 flex items-center">
