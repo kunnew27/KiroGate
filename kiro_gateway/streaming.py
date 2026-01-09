@@ -152,15 +152,25 @@ def _format_tool_calls_for_streaming(tool_calls: List[Dict[str, Any]]) -> List[D
         List of indexed tool calls for streaming
     """
     indexed_tool_calls = []
+    valid_idx = 0
     for idx, tc in enumerate(tool_calls):
         func = tc.get("function") or {}
         tool_name = func.get("name") or ""
         tool_args = func.get("arguments") or "{}"
 
-        logger.debug(f"Tool call [{idx}] '{tool_name}': id={tc.get('id')}, args_length={len(tool_args)}")
+        # Log warning for empty arguments but still send (allows client to handle)
+        if tool_args == "{}" or tool_args.strip() == "":
+            logger.warning(f"Tool call '{tool_name}' has empty arguments")
+        
+        # Filter out tool calls with no name
+        if not tool_name:
+            logger.warning(f"Dropping tool call with no name at index {idx}")
+            continue
+
+        logger.debug(f"Tool call [{valid_idx}] '{tool_name}': id={tc.get('id')}, args_length={len(tool_args)}")
 
         indexed_tc = {
-            "index": idx,
+            "index": valid_idx,
             "id": tc.get("id"),
             "type": tc.get("type", "function"),
             "function": {
@@ -169,6 +179,7 @@ def _format_tool_calls_for_streaming(tool_calls: List[Dict[str, Any]]) -> List[D
             }
         }
         indexed_tool_calls.append(indexed_tc)
+        valid_idx += 1
 
     return indexed_tool_calls
 
@@ -186,12 +197,24 @@ def _format_tool_calls_for_non_streaming(tool_calls: List[Dict[str, Any]]) -> Li
     cleaned_tool_calls = []
     for tc in tool_calls:
         func = tc.get("function") or {}
+        tool_name = func.get("name", "")
+        tool_args = func.get("arguments", "{}")
+        
+        # Log warning for empty arguments but still send (allows client to handle)
+        if tool_args == "{}" or tool_args.strip() == "":
+            logger.warning(f"Tool call '{tool_name}' has empty arguments")
+        
+        # Filter out tool calls with no name
+        if not tool_name:
+            logger.warning(f"Dropping tool call with no name")
+            continue
+        
         cleaned_tc = {
             "id": tc.get("id"),
             "type": tc.get("type", "function"),
             "function": {
-                "name": func.get("name", ""),
-                "arguments": func.get("arguments", "{}")
+                "name": tool_name,
+                "arguments": tool_args
             }
         }
         cleaned_tool_calls.append(cleaned_tc)

@@ -371,11 +371,14 @@ class AwsEventStreamParser:
         else:
             input_str = str(input_data) if input_data else ''
         
+        tool_name = data.get('name', '')
+        logger.debug(f"[TOOL_START] name='{tool_name}', initial_input={repr(input_str[:100])}")
+        
         self.current_tool_call = {
             "id": data.get('toolUseId', generate_tool_call_id()),
             "type": "function",
             "function": {
-                "name": data.get('name', ''),
+                "name": tool_name,
                 "arguments": input_str
             }
         }
@@ -394,6 +397,22 @@ class AwsEventStreamParser:
                 input_str = json.dumps(input_data)
             else:
                 input_str = str(input_data) if input_data else ''
+            
+            tool_name = self.current_tool_call['function'].get('name', 'unknown')
+            current_args = self.current_tool_call['function']['arguments']
+            
+            # Check if we already have valid JSON - if so, ignore additional input
+            if current_args.strip():
+                try:
+                    json.loads(current_args)
+                    # Already have valid JSON - model is trying to append narrative text
+                    logger.warning(f"[TOOL_INPUT] name='{tool_name}', IGNORING extra input after valid JSON: {repr(input_str[:50])}")
+                    return None
+                except json.JSONDecodeError:
+                    # Not yet valid, continue appending
+                    pass
+            
+            logger.debug(f"[TOOL_INPUT] name='{tool_name}', appending={repr(input_str[:100])}")
             self.current_tool_call['function']['arguments'] += input_str
         return None
     
@@ -422,7 +441,25 @@ class AwsEventStreamParser:
                     self.current_tool_call['function']['arguments'] = json.dumps(parsed)
                     logger.debug(f"Tool '{tool_name}' arguments parsed successfully: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
                 except json.JSONDecodeError as e:
-                    # Если не удалось распарсить, оставляем пустой объект
+                    # Попытка авто-дополнить незакрытый JSON
+                    fixed_args = args.strip()
+                    
+                    # Добавляем недостающие закрывающие скобки
+                    open_braces = fixed_args.count('{')
+                    close_braces = fixed_args.count('}')
+                    if open_braces > close_braces:
+                        fixed_args += '}' * (open_braces - close_braces)
+                        logger.info(f"Auto-completing JSON for '{tool_name}': added {open_braces - close_braces} closing brace(s)")
+                        
+                        try:
+                            parsed = json.loads(fixed_args)
+                            self.current_tool_call['function']['arguments'] = json.dumps(parsed)
+                            logger.info(f"Successfully auto-completed JSON for '{tool_name}': {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
+                            return
+                        except json.JSONDecodeError:
+                            logger.warning(f"Auto-complete failed for '{tool_name}'")
+                    
+                    # Если автодополнение не помогло, оставляем пустой объект
                     logger.warning(f"Failed to parse tool '{tool_name}' arguments: {e}. Raw: {args[:200]}")
                     self.current_tool_call['function']['arguments'] = "{}"
             else:
